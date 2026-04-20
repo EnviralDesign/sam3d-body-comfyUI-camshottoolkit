@@ -2,20 +2,38 @@
 
 Minimal ComfyUI custom node package for:
 
-- `Load SAM 3D Body Model`
-- `SAM 3D Body: Process Image`
-- `SAM 3D Body: Render Offset View`
+- `Cam Shot Toolkit: Load SAM3D Model`
+- `Cam Shot Toolkit: Process Image`
+- `Cam Shot Toolkit: Render Offset View`
 
 This repo is a focused extraction from a larger SAM3DBody node pack, trimmed for calibrated pose-to-camera-shot workflows.
 
 ## Install
 
-Place this repo in `ComfyUI/custom_nodes/` and restart ComfyUI.
+1. Clone or copy this repo into `ComfyUI/custom_nodes/`.
+2. Let ComfyUI-Manager run `install.py`, or run it manually:
 
-This minimal package currently runs in ComfyUI's active Python environment rather than a separate `comfy-env` isolated runtime.
+```bash
+python install.py
+```
+
+3. Restart ComfyUI.
+
+This package installs into ComfyUI's active Python environment. It does not attempt to replace ComfyUI's existing `torch` / `torchvision` install. A working ComfyUI CUDA environment is expected already.
 
 ## Included
 
 - SAM3D model loader with Hugging Face auto-download
 - single-image SAM3D processing node
 - calibrated offset renderer with pivot, background, and lighting controls
+
+## Node Categories
+
+- `CamShotToolkit`
+- `CamShotToolkit/processing`
+- `CamShotToolkit/visualization`
+
+## Notes
+
+- Model weights are downloaded automatically on first use into `ComfyUI/models/sam3dbody`.
+- The render node uses `pyrender` in Python, not a Three.js viewport.
