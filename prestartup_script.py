@@ -1,3 +1,1 @@
-from comfy_env import setup_env
-
-setup_env()
+print("[sam3d-camshottoolkit] Prestartup complete.")

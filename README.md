@@ -12,7 +12,7 @@ This repo is a focused extraction from a larger SAM3DBody node pack, trimmed for
 
 Place this repo in `ComfyUI/custom_nodes/` and restart ComfyUI.
 
-The package uses `comfy-env` with `nodes/comfy-env.toml` for its isolated runtime.
+This minimal package currently runs in ComfyUI's active Python environment rather than a separate `comfy-env` isolated runtime.
 
 ## Included
 
