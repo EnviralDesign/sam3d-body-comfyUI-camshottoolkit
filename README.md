@@ -1,0 +1,21 @@
+# SAM3D Body ComfyUI Cam Shot Toolkit
+
+Minimal ComfyUI custom node package for:
+
+- `Load SAM 3D Body Model`
+- `SAM 3D Body: Process Image`
+- `SAM 3D Body: Render Offset View`
+
+This repo is a focused extraction from a larger SAM3DBody node pack, trimmed for calibrated pose-to-camera-shot workflows.
+
+## Install
+
+Place this repo in `ComfyUI/custom_nodes/` and restart ComfyUI.
+
+The package uses `comfy-env` with `nodes/comfy-env.toml` for its isolated runtime.
+
+## Included
+
+- SAM3D model loader with Hugging Face auto-download
+- single-image SAM3D processing node
+- calibrated offset renderer with pivot, background, and lighting controls
