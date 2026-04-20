@@ -110,7 +110,7 @@ class SAM3DBodyProcess:
     RETURN_TYPES = ("SAM3D_OUTPUT", "SKELETON", "IMAGE")
     RETURN_NAMES = ("mesh_data", "skeleton", "debug_image")
     FUNCTION = "process"
-    CATEGORY = "SAM3DBody/processing"
+    CATEGORY = "CamShotToolkit/processing"
 
     def _compute_bbox_from_mask(self, mask):
         """Compute bounding box from binary mask."""

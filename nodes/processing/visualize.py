@@ -163,7 +163,7 @@ class SAM3DBodyVisualize:
     RETURN_TYPES = ("IMAGE",)
     RETURN_NAMES = ("rendered_image",)
     FUNCTION = "visualize"
-    CATEGORY = "SAM3DBody/visualization"
+    CATEGORY = "CamShotToolkit/visualization"
 
     def visualize(self, mesh_data, image, render_mode="overlay"):
         """Visualize the 3D mesh reconstruction."""
@@ -380,7 +380,7 @@ class SAM3DBodyRenderOffsetView:
     RETURN_TYPES = ("IMAGE", "STRING")
     RETURN_NAMES = ("rendered_image", "camera_info")
     FUNCTION = "render"
-    CATEGORY = "SAM3DBody/visualization"
+    CATEGORY = "CamShotToolkit/visualization"
 
     def render(
         self,
@@ -623,7 +623,7 @@ class SAM3DBodyExportMesh:
     RETURN_TYPES = ("STRING",)
     RETURN_NAMES = ("file_path",)
     FUNCTION = "export_mesh"
-    CATEGORY = "SAM3DBody/io"
+    CATEGORY = "CamShotToolkit/io"
 
     def export_mesh(self, mesh_data, filename="output_mesh.stl"):
         """Export mesh to file."""
@@ -761,7 +761,7 @@ class SAM3DBodyGetVertices:
     RETURN_TYPES = ("STRING",)
     RETURN_NAMES = ("info",)
     FUNCTION = "get_vertices"
-    CATEGORY = "SAM3DBody/utilities"
+    CATEGORY = "CamShotToolkit/utilities"
 
     def get_vertices(self, mesh_data):
         """Extract and display vertex information."""

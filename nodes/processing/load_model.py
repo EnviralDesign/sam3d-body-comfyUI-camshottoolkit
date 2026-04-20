@@ -27,7 +27,7 @@ class LoadSAM3DBodyModel:
     RETURN_TYPES = ("SAM3D_MODEL",)
     RETURN_NAMES = ("model",)
     FUNCTION = "load_model"
-    CATEGORY = "SAM3DBody"
+    CATEGORY = "CamShotToolkit"
 
     def load_model(self, model_path):
         """Prepare model config (actual loading happens in inference nodes)."""
