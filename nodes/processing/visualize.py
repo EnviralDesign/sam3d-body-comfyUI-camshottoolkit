@@ -129,6 +129,44 @@ def _spherical_offset(yaw_deg, pitch_deg, radius):
     return np.array([x, y, z], dtype=np.float32)
 
 
+def _decompose_orbit_offset(offset, world_up=None):
+    if world_up is None:
+        world_up = np.array([0.0, 1.0, 0.0], dtype=np.float32)
+
+    offset = np.asarray(offset, dtype=np.float32)
+    radius = float(np.linalg.norm(offset))
+    if radius < 1e-8:
+        return 0.0, 0.0, 1.0
+
+    up_amount = float(np.dot(offset, world_up) / radius)
+    up_amount = float(np.clip(up_amount, -1.0, 1.0))
+    pitch_deg = float(np.degrees(np.arcsin(up_amount)))
+
+    horizontal = offset - (world_up * np.dot(offset, world_up))
+    horizontal_len = float(np.linalg.norm(horizontal))
+    if horizontal_len < 1e-8:
+        yaw_deg = 0.0
+    else:
+        yaw_deg = float(np.degrees(np.arctan2(horizontal[0], horizontal[2])))
+
+    return yaw_deg, pitch_deg, radius
+
+
+def _upright_orbit_position(base_position, pivot, orbit_pitch_deg, orbit_yaw_deg, world_up=None):
+    if world_up is None:
+        world_up = np.array([0.0, 1.0, 0.0], dtype=np.float32)
+
+    pivot = np.asarray(pivot, dtype=np.float32)
+    base_position = np.asarray(base_position, dtype=np.float32)
+    base_offset = base_position - pivot
+
+    base_yaw, base_pitch, radius = _decompose_orbit_offset(base_offset, world_up=world_up)
+    final_pitch = float(np.clip(base_pitch + float(orbit_pitch_deg), -89.0, 89.0))
+    final_yaw = base_yaw + float(orbit_yaw_deg)
+
+    return pivot + _spherical_offset(final_yaw, final_pitch, radius), base_yaw, base_pitch, final_yaw, final_pitch
+
+
 def _resolve_lighting(preset, ambient, key, fill, rim):
     if preset == "flat":
         return max(ambient, 0.6), key * 0.55, max(fill, key * 0.45), rim * 0.15
@@ -484,8 +522,13 @@ class SAM3DBodyRenderOffsetView:
             + (base_forward * float(offset_z))
         )
 
-        orbit_mat = _rotation_matrix_xyz(orbit_x, orbit_y, 0.0)
-        cam_pos = pivot + (orbit_mat @ (pre_orbit_cam_pos - pivot))
+        cam_pos, base_yaw, base_pitch, final_yaw, final_pitch = _upright_orbit_position(
+            pre_orbit_cam_pos,
+            pivot,
+            orbit_pitch_deg=orbit_x,
+            orbit_yaw_deg=orbit_y,
+            world_up=world_up,
+        )
 
         camera_pose = _camera_pose_look_at(cam_pos, pivot, roll_deg=orbit_z, world_up=world_up)
 
@@ -578,6 +621,10 @@ class SAM3DBodyRenderOffsetView:
             "pivot": [float(x) for x in pivot],
             "camera_position": [float(x) for x in cam_pos],
             "camera_target": [float(x) for x in pivot],
+            "base_orbit_yaw": float(base_yaw),
+            "base_orbit_pitch": float(base_pitch),
+            "final_orbit_yaw": float(final_yaw),
+            "final_orbit_pitch": float(final_pitch),
             "focal_x": float(fx),
             "focal_y": float(fy),
             "principal_x": float(cx),
