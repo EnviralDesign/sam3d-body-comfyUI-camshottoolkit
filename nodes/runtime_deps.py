@@ -13,6 +13,7 @@ REQUIRED_MODULES = {
     "pyrender": "pyrender",
     "pytorch_lightning": "pytorch-lightning",
     "roma": "roma",
+    "termcolor": "termcolor",
     "timm": "timm",
     "transformers": "transformers",
     "trimesh": "trimesh",
