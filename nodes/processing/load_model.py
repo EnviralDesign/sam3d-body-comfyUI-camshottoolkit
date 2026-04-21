@@ -1,5 +1,6 @@
 import os
 import folder_paths
+from ..runtime_deps import ensure_runtime_dependencies
 
 # Default model path in ComfyUI models folder
 DEFAULT_MODEL_PATH = os.path.join(folder_paths.models_dir, "sam3dbody")
@@ -31,6 +32,7 @@ class LoadSAM3DBodyModel:
 
     def load_model(self, model_path):
         """Prepare model config (actual loading happens in inference nodes)."""
+        ensure_runtime_dependencies("Cam Shot Toolkit: Load SAM3D Model")
         import torch
 
         # Auto-detect device

@@ -14,6 +14,7 @@ import torch
 from pathlib import Path
 import folder_paths
 from ..base import numpy_to_comfy_image
+from ..runtime_deps import ensure_runtime_dependencies
 
 # Add sam-3d-body to Python path if it exists
 _SAM3D_BODY_PATH = Path(__file__).parent.parent.parent.parent.parent.parent / "sam-3d-body"
@@ -167,6 +168,7 @@ class SAM3DBodyVisualize:
 
     def visualize(self, mesh_data, image, render_mode="overlay"):
         """Visualize the 3D mesh reconstruction."""
+        ensure_runtime_dependencies("Cam Shot Toolkit: Visualize Mesh")
 
         print(f"[SAM3DBody] Visualizing mesh with mode: {render_mode}")
 
@@ -413,6 +415,7 @@ class SAM3DBodyRenderOffsetView:
         bg_g=38,
         bg_b=38,
     ):
+        ensure_runtime_dependencies("Cam Shot Toolkit: Render Offset View")
         _prepare_pyrender_backend()
         try:
             import pyrender

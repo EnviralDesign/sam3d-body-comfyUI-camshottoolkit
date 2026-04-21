@@ -3,6 +3,7 @@ import tempfile
 import torch
 import numpy as np
 import cv2
+from ..runtime_deps import ensure_runtime_dependencies
 
 # =============================================================================
 # Helper functions (inlined to avoid relative import issues in worker)
@@ -41,6 +42,8 @@ def _load_sam3d_model(model_config: dict):
 
     if cache_key in _MODEL_CACHE:
         return _MODEL_CACHE[cache_key]
+
+    ensure_runtime_dependencies("Cam Shot Toolkit: Process Image")
 
     # Import heavy dependencies only inside worker
     from ..sam_3d_body import load_sam_3d_body
@@ -135,6 +138,7 @@ class SAM3DBodyProcess:
             inference_type: "full", "body", or "hand"
             mask: Optional segmentation mask
         """
+        ensure_runtime_dependencies("Cam Shot Toolkit: Process Image")
         from ..sam_3d_body import SAM3DBodyEstimator
 
         # Lazy load model (cached after first call)
