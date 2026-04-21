@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "sam3d-camshot-toolkit"
-version = "0.1.0"
+version = "0.1.1"
 description = "Minimal SAM3D body reconstruction toolkit for calibrated camera-shot workflows in ComfyUI."
 license = { file = "LICENSE" }
 readme = "README.md"
