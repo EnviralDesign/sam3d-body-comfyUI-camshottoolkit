@@ -52,3 +52,11 @@ comfy node publish
 - Model weights are downloaded automatically on first use into `ComfyUI/models/sam3dbody`.
 - The render node uses `pyrender` in Python, not a Three.js viewport.
 - `install.py` is intentionally a no-op for Registry compliance. Dependency installation should be handled by ComfyUI-Manager or an explicit `pip install -r requirements.txt`.
+
+## Donations & Support
+
+If this saves you time, you can support the work here:
+
+- [Patreon](https://www.patreon.com/EnviralDesign)
+- [GitHub Sponsors](https://github.com/sponsors/EnviralDesign)
+- [PayPal](https://www.paypal.com/donate?hosted_button_id=RP8EJAHSDTZ86)
