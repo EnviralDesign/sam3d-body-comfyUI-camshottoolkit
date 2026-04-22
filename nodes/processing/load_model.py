@@ -6,22 +6,6 @@ from ..runtime_deps import ensure_runtime_dependencies
 DEFAULT_MODEL_PATH = os.path.join(folder_paths.models_dir, "sam3dbody")
 
 
-def _resolve_model_path(model_path):
-    """
-    Resolve the configured model path.
-
-    Blank or whitespace-only values fall back to the local ComfyUI models dir
-    so workflows remain portable across machines.
-    """
-    if model_path is None:
-        return DEFAULT_MODEL_PATH
-
-    if isinstance(model_path, str) and not model_path.strip():
-        return DEFAULT_MODEL_PATH
-
-    return os.path.abspath(model_path)
-
-
 class LoadSAM3DBodyModel:
     """
     Prepares SAM 3D Body model configuration.
@@ -33,16 +17,7 @@ class LoadSAM3DBodyModel:
     @classmethod
     def INPUT_TYPES(cls):
         return {
-            "required": {
-                "model_path": ("STRING", {
-                    "default": DEFAULT_MODEL_PATH,
-                    "tooltip": (
-                        "Path to SAM 3D Body model folder "
-                        "(contains model.ckpt and assets/mhr_model.pt). "
-                        "Leave blank to auto-use this ComfyUI install's models/sam3dbody folder."
-                    )
-                }),
-            },
+            "required": {},
         }
 
     RETURN_TYPES = ("SAM3D_MODEL",)
@@ -50,7 +25,7 @@ class LoadSAM3DBodyModel:
     FUNCTION = "load_model"
     CATEGORY = "CamShotToolkit"
 
-    def load_model(self, model_path):
+    def load_model(self):
         """Prepare model config (actual loading happens in inference nodes)."""
         ensure_runtime_dependencies("Cam Shot Toolkit: Load SAM3D Model")
         import torch
@@ -58,9 +33,10 @@ class LoadSAM3DBodyModel:
         # Auto-detect device
         device = "cuda" if torch.cuda.is_available() else "cpu"
 
-        # Resolve to absolute path, with blank values falling back to the
-        # current ComfyUI install's models folder.
-        model_path = _resolve_model_path(model_path)
+        # Always derive the model path from the local ComfyUI install to keep
+        # workflows portable across machines.
+        model_path = os.path.abspath(DEFAULT_MODEL_PATH)
+        print(f"[SAM3DBody] Using model path: {model_path}")
 
         # Expected file paths
         ckpt_path = os.path.join(model_path, "model.ckpt")
