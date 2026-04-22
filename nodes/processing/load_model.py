@@ -6,6 +6,22 @@ from ..runtime_deps import ensure_runtime_dependencies
 DEFAULT_MODEL_PATH = os.path.join(folder_paths.models_dir, "sam3dbody")
 
 
+def _resolve_model_path(model_path):
+    """
+    Resolve the configured model path.
+
+    Blank or whitespace-only values fall back to the local ComfyUI models dir
+    so workflows remain portable across machines.
+    """
+    if model_path is None:
+        return DEFAULT_MODEL_PATH
+
+    if isinstance(model_path, str) and not model_path.strip():
+        return DEFAULT_MODEL_PATH
+
+    return os.path.abspath(model_path)
+
+
 class LoadSAM3DBodyModel:
     """
     Prepares SAM 3D Body model configuration.
@@ -20,7 +36,11 @@ class LoadSAM3DBodyModel:
             "required": {
                 "model_path": ("STRING", {
                     "default": DEFAULT_MODEL_PATH,
-                    "tooltip": "Path to SAM 3D Body model folder (contains model.ckpt and assets/mhr_model.pt)"
+                    "tooltip": (
+                        "Path to SAM 3D Body model folder "
+                        "(contains model.ckpt and assets/mhr_model.pt). "
+                        "Leave blank to auto-use this ComfyUI install's models/sam3dbody folder."
+                    )
                 }),
             },
         }
@@ -38,8 +58,9 @@ class LoadSAM3DBodyModel:
         # Auto-detect device
         device = "cuda" if torch.cuda.is_available() else "cpu"
 
-        # Resolve to absolute path
-        model_path = os.path.abspath(model_path)
+        # Resolve to absolute path, with blank values falling back to the
+        # current ComfyUI install's models folder.
+        model_path = _resolve_model_path(model_path)
 
         # Expected file paths
         ckpt_path = os.path.join(model_path, "model.ckpt")
