@@ -194,42 +194,13 @@ def _upright_orbit_position(base_position, pivot, orbit_pitch_deg, orbit_yaw_deg
     return pivot + _spherical_offset(final_yaw, final_pitch, radius), base_yaw, base_pitch, final_yaw, final_pitch
 
 
-def _orbit_basis_from_yp(yaw_deg, pitch_deg, world_up=None):
-    if world_up is None:
-        world_up = np.array([0.0, 1.0, 0.0], dtype=np.float32)
-
-    forward = _normalize(-_spherical_offset(yaw_deg, pitch_deg, 1.0), fallback=np.array([0.0, 0.0, -1.0], dtype=np.float32))
-    right = np.cross(forward, world_up)
-    if np.linalg.norm(right) < 1e-6:
-        right = np.cross(forward, np.array([0.0, 0.0, 1.0], dtype=np.float32))
-    right = _normalize(right, fallback=np.array([1.0, 0.0, 0.0], dtype=np.float32))
-    down = _normalize(np.cross(right, forward), fallback=np.array([0.0, 1.0, 0.0], dtype=np.float32))
-
-    basis = np.eye(3, dtype=np.float32)
-    basis[:, 0] = right
-    basis[:, 1] = down
-    basis[:, 2] = forward
-    return basis
-
-
-def _apply_roll_to_basis(basis, roll_deg):
-    basis = np.asarray(basis, dtype=np.float32)
-    if abs(float(roll_deg)) < 1e-6:
-        return basis
-
-    roll = np.radians(roll_deg)
-    c = np.cos(roll)
-    s = np.sin(roll)
-
-    right = basis[:, 0]
-    down = basis[:, 1]
-    forward = basis[:, 2]
-
-    rolled = np.eye(3, dtype=np.float32)
-    rolled[:, 0] = right * c - down * s
-    rolled[:, 1] = right * s + down * c
-    rolled[:, 2] = forward
-    return rolled
+def _to_float_vec3(value):
+    if isinstance(value, (list, tuple)) and len(value) == 3:
+        try:
+            return np.asarray([float(value[0]), float(value[1]), float(value[2])], dtype=np.float32)
+        except Exception:
+            return None
+    return None
 
 
 def _resolve_lighting(preset, ambient, key, fill, rim):
@@ -249,6 +220,9 @@ def _parse_interactive_state(state_text):
         "pitch_deg": 0.0,
         "roll_deg": 0.0,
         "distance": 0.0,
+        "camera_position": None,
+        "camera_target": None,
+        "camera_up": None,
     }
     if not state_text:
         return default
@@ -257,15 +231,26 @@ def _parse_interactive_state(state_text):
         if not isinstance(data, dict):
             return default
         for key in default:
-            if key in data:
+            if key in data and key not in ("camera_position", "camera_target", "camera_up"):
                 default[key] = float(data[key])
+        for key in ("camera_position", "camera_target", "camera_up"):
+            parsed = _to_float_vec3(data.get(key))
+            if parsed is not None:
+                default[key] = parsed
         return default
     except Exception:
         return default
 
 
+def _state_has_explicit_camera(state):
+    return (
+        _to_float_vec3(state.get("camera_position")) is not None
+        and _to_float_vec3(state.get("camera_target")) is not None
+    )
+
+
 def _state_has_interactive_camera(state):
-    return abs(float(state.get("distance", 0.0))) > 1e-5
+    return _state_has_explicit_camera(state) or abs(float(state.get("distance", 0.0))) > 1e-5
 
 
 def _camera_axes(yaw_deg, pitch_deg, roll_deg):
@@ -277,38 +262,64 @@ def _camera_axes(yaw_deg, pitch_deg, roll_deg):
 
 
 def _state_to_camera_pose(state):
+    if _state_has_explicit_camera(state):
+        position = _to_float_vec3(state.get("camera_position"))
+        target = _to_float_vec3(state.get("camera_target"))
+        up = _to_float_vec3(state.get("camera_up"))
+        if up is None:
+            up = np.array([0.0, 1.0, 0.0], dtype=np.float32)
+        pose = _camera_pose_look_at(position, target, world_up=up)
+        return position.astype(np.float32), target.astype(np.float32), pose
+
     pivot = np.array([state["pivot_x"], state["pivot_y"], state["pivot_z"]], dtype=np.float32)
     orbit_basis = _orbit_basis_from_yp(float(state["yaw_deg"]), float(state["pitch_deg"]))
     orbit_forward = (orbit_basis @ np.array([0.0, 0.0, 1.0], dtype=np.float32)).astype(np.float32)
     orbit_forward = _normalize(orbit_forward, fallback=np.array([0.0, 0.0, 1.0], dtype=np.float32))
     position = (pivot - orbit_forward * float(state["distance"])).astype(np.float32)
-
-    right, down, forward = _camera_axes(
-        float(state["yaw_deg"]),
-        float(state["pitch_deg"]),
-        float(state["roll_deg"]),
-    )
-    up = (-down).astype(np.float32)
-    backward = (-forward).astype(np.float32)
-
-    pose = np.eye(4, dtype=np.float32)
-    pose[:3, 0] = right
-    pose[:3, 1] = up
-    pose[:3, 2] = backward
-    pose[:3, 3] = position
+    pose = _camera_pose_look_at(position, pivot, roll_deg=float(state["roll_deg"]))
     return position, pivot, pose
 
 
-def _camera_state_from_parameters(pivot, cam_pos, yaw_deg, pitch_deg, roll_deg):
-    return {
-        "pivot_x": float(pivot[0]),
-        "pivot_y": float(pivot[1]),
-        "pivot_z": float(pivot[2]),
-        "yaw_deg": float(yaw_deg),
-        "pitch_deg": float(pitch_deg),
-        "roll_deg": float(roll_deg),
-        "distance": float(np.linalg.norm(np.asarray(cam_pos, dtype=np.float32) - np.asarray(pivot, dtype=np.float32))),
+def _camera_state_from_pose(position, target, up=None, legacy=None):
+    state = {
+        "camera_position": [float(position[0]), float(position[1]), float(position[2])],
+        "camera_target": [float(target[0]), float(target[1]), float(target[2])],
+        "camera_up": [
+            float(up[0]) if up is not None else 0.0,
+            float(up[1]) if up is not None else 1.0,
+            float(up[2]) if up is not None else 0.0,
+        ],
+        "pivot_x": float(target[0]),
+        "pivot_y": float(target[1]),
+        "pivot_z": float(target[2]),
+        "distance": float(np.linalg.norm(np.asarray(position, dtype=np.float32) - np.asarray(target, dtype=np.float32))),
     }
+    if legacy:
+        state.update({
+            "yaw_deg": float(legacy.get("yaw_deg", 0.0)),
+            "pitch_deg": float(legacy.get("pitch_deg", 0.0)),
+            "roll_deg": float(legacy.get("roll_deg", 0.0)),
+        })
+    else:
+        state.update({
+            "yaw_deg": 0.0,
+            "pitch_deg": 0.0,
+            "roll_deg": 0.0,
+        })
+    return state
+
+
+def _camera_state_from_parameters(pivot, cam_pos, yaw_deg, pitch_deg, roll_deg, up=None):
+    return _camera_state_from_pose(
+        position=cam_pos,
+        target=pivot,
+        up=up,
+        legacy={
+            "yaw_deg": yaw_deg,
+            "pitch_deg": pitch_deg,
+            "roll_deg": roll_deg,
+        },
+    )
 
 
 def _sample_preview_points(vertices, max_points=6000):
@@ -571,7 +582,7 @@ class SAM3DBodyRenderOffsetView:
                 "bg_g": ("INT", {"default": 38, "min": 0, "max": 255, "step": 1}),
                 "bg_b": ("INT", {"default": 38, "min": 0, "max": 255, "step": 1}),
                 "interactive_state": ("STRING", {
-                    "default": "{\"pivot_x\":0,\"pivot_y\":0,\"pivot_z\":0,\"yaw_deg\":0,\"pitch_deg\":0,\"roll_deg\":0,\"distance\":0}",
+                    "default": "{}",
                     "multiline": False,
                     "tooltip": "Hidden interactive camera state managed by the viewer."
                 }),
@@ -695,20 +706,26 @@ class SAM3DBodyRenderOffsetView:
             world_up=world_up,
         )
 
+        parameter_camera_pose = _camera_pose_look_at(cam_pos, pivot, roll_deg=orbit_z, world_up=world_up)
         parameter_state = _camera_state_from_parameters(
             pivot=pivot,
             cam_pos=cam_pos,
             yaw_deg=final_yaw,
             pitch_deg=final_pitch,
             roll_deg=orbit_z,
+            up=parameter_camera_pose[:3, 1],
         )
         parsed_interactive_state = _parse_interactive_state(interactive_state)
+        use_interactive_state = bool(use_interactive_view) and _state_has_interactive_camera(parsed_interactive_state)
         active_state = (
             parsed_interactive_state
-            if use_interactive_view and _state_has_interactive_camera(parsed_interactive_state)
+            if use_interactive_state
             else parameter_state
         )
-        cam_pos, pivot, camera_pose = _state_to_camera_pose(active_state)
+        if use_interactive_state:
+            cam_pos, pivot, camera_pose = _state_to_camera_pose(active_state)
+        else:
+            camera_pose = parameter_camera_pose
 
         if bg_preset == "black":
             bg_r, bg_g, bg_b = 0, 0, 0
@@ -792,8 +809,6 @@ class SAM3DBodyRenderOffsetView:
         rendered_bgr = rendered_rgb[:, :, ::-1].copy()
         result = numpy_to_comfy_image(rendered_bgr)
 
-        preview_points = _sample_preview_points(verts_render, max_points=6000)
-
         camera_info = {
             "render_width": int(render_width),
             "render_height": int(render_height),
@@ -829,7 +844,10 @@ class SAM3DBodyRenderOffsetView:
             "bg_color": [int(bg_r), int(bg_g), int(bg_b)],
         }
         ui_data = {
-            "preview_points": [json.dumps(preview_points.tolist())],
+            "preview_mesh": [json.dumps({
+                "vertices": verts_render.tolist(),
+                "faces": faces.tolist(),
+            })],
             "parameter_camera_state": [json.dumps(parameter_state)],
             "active_camera_state": [json.dumps(active_state)],
             "render_size": [json.dumps({

@@ -35,13 +35,13 @@ function markNodeChanged(node) {
 
 function extractSam3dUi(message) {
     const out = message?.output;
-    if (out && typeof out === "object" && out.preview_points) {
+    if (out && typeof out === "object" && (out.preview_mesh || out.active_camera_state)) {
         return out;
     }
-    if (out && typeof out === "object" && out.output && typeof out.output === "object" && out.output.preview_points) {
+    if (out && typeof out === "object" && out.output && typeof out.output === "object" && (out.output.preview_mesh || out.output.active_camera_state)) {
         return out.output;
     }
-    if (message && typeof message === "object" && message.preview_points) {
+    if (message && typeof message === "object" && (message.preview_mesh || message.active_camera_state)) {
         return message;
     }
     return null;
@@ -68,6 +68,20 @@ function buildViewerState(node) {
         use_interactive_view: !!getWidgetValue(node, "use_interactive_view", true),
         show_viewer_hud: !!getWidgetValue(node, "show_viewer_hud", true),
         interactive_state: String(getWidgetValue(node, STATE_WIDGET, "") || ""),
+        mesh_r: Number(getWidgetValue(node, "mesh_r", 235) ?? 235),
+        mesh_g: Number(getWidgetValue(node, "mesh_g", 235) ?? 235),
+        mesh_b: Number(getWidgetValue(node, "mesh_b", 235) ?? 235),
+        bg_preset: String(getWidgetValue(node, "bg_preset", "mid_gray") || "mid_gray"),
+        bg_r: Number(getWidgetValue(node, "bg_r", 38) ?? 38),
+        bg_g: Number(getWidgetValue(node, "bg_g", 38) ?? 38),
+        bg_b: Number(getWidgetValue(node, "bg_b", 38) ?? 38),
+        lighting_preset: String(getWidgetValue(node, "lighting_preset", "studio") || "studio"),
+        ambient_intensity: Number(getWidgetValue(node, "ambient_intensity", 0.35) ?? 0.35),
+        key_intensity: Number(getWidgetValue(node, "key_intensity", 14.0) ?? 14.0),
+        key_yaw: Number(getWidgetValue(node, "key_yaw", 35.0) ?? 35.0),
+        key_pitch: Number(getWidgetValue(node, "key_pitch", 35.0) ?? 35.0),
+        fill_intensity: Number(getWidgetValue(node, "fill_intensity", 6.0) ?? 6.0),
+        rim_intensity: Number(getWidgetValue(node, "rim_intensity", 8.0) ?? 8.0),
     };
 }
 

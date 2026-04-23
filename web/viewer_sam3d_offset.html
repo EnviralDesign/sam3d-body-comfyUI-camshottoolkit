@@ -8,7 +8,13 @@
         * { box-sizing: border-box; margin: 0; padding: 0; }
         :root { --sam-ar: 1; }
         html, body { width: 100%; height: 100%; overflow: hidden; background: #101010; color: #ddd; font-family: "Segoe UI", sans-serif; }
-        #root { container-type: size; width: 100%; height: 100%; position: relative; background: #101010; }
+        #root {
+            container-type: size;
+            width: 100%;
+            height: 100%;
+            position: relative;
+            background: #101010;
+        }
         #stage-wrap {
             position: absolute;
             inset: 0;
@@ -26,15 +32,12 @@
             pointer-events: auto;
             touch-action: none;
         }
-        #canvas, #pivotCrossOverlay {
-            position: absolute;
-            inset: 0;
+        #canvas {
             width: 100%;
             height: 100%;
             display: block;
+            background: #101010;
         }
-        #canvas { background: #101010; z-index: 1; }
-        #pivotCrossOverlay { pointer-events: none; z-index: 3; }
         #hud {
             position: absolute;
             top: 8px;
@@ -68,7 +71,6 @@
         <div id="stage-wrap">
             <div id="stage">
                 <canvas id="canvas"></canvas>
-                <canvas id="pivotCrossOverlay"></canvas>
                 <div id="hud">Waiting for node execution.</div>
                 <div id="error"></div>
             </div>
@@ -76,31 +78,31 @@
     </div>
 
     <script type="module">
+        import * as THREE from "./three.module.js";
+        import { ArcballControls } from "./ArcballControls.js";
+
         const root = document.getElementById("root");
         const stage = document.getElementById("stage");
         const canvas = document.getElementById("canvas");
-        const ctx = canvas.getContext("2d", { alpha: false });
-        const pivotCrossCanvas = document.getElementById("pivotCrossOverlay");
-        const pivotCrossCtx = pivotCrossCanvas.getContext("2d", { alpha: true });
         const hud = document.getElementById("hud");
         const errorEl = document.getElementById("error");
 
-        const RAD_TO_DEG = 180 / Math.PI;
-        const ORBIT_STEP_RAD = 0.003;
-        const WHEEL_STEP = 0.001;
-        const PAN_FACTOR = 0.0015;
-
+        let renderer = null;
+        let scene = null;
+        let camera = null;
+        let controls = null;
+        let ambientLight = null;
+        let keyLight = null;
+        let fillLight = null;
+        let rimLight = null;
+        let mesh = null;
         let uiPayload = null;
         let nodeState = null;
-        let currentPreviewState = null;
-        let previewPoints = null;
-        let pointerTracker = null;
-        let lastSignature = "";
-        let needsRender = true;
-
-        function requestRender() {
-            needsRender = true;
-        }
+        let lastStateSignature = "";
+        let lastMeshSignature = "";
+        let lastAppliedCameraSignature = "";
+        let lastSentInteractiveState = "";
+        let frameRequested = false;
 
         function parseJson(value, fallback) {
             try {
@@ -118,153 +120,48 @@
             return (value * Math.PI) / 180.0;
         }
 
-        function normalize3(v, fallback = [0, 0, 1]) {
-            const n = Math.hypot(v[0], v[1], v[2]);
-            if (n < 1e-8) {
-                return [...fallback];
+        function vec3From(value, fallback = [0, 0, 0]) {
+            if (Array.isArray(value) && value.length === 3) {
+                return new THREE.Vector3(
+                    Number(value[0]) || 0,
+                    Number(value[1]) || 0,
+                    Number(value[2]) || 0,
+                );
             }
-            return [v[0] / n, v[1] / n, v[2] / n];
+            return new THREE.Vector3(fallback[0], fallback[1], fallback[2]);
         }
 
-        function dot3(a, b) {
-            return a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
-        }
-
-        function cross3(a, b) {
-            return [
-                a[1] * b[2] - a[2] * b[1],
-                a[2] * b[0] - a[0] * b[2],
-                a[0] * b[1] - a[1] * b[0],
-            ];
-        }
-
-        function matMul3(a, b) {
-            const out = [[0, 0, 0], [0, 0, 0], [0, 0, 0]];
-            for (let i = 0; i < 3; i++) {
-                for (let j = 0; j < 3; j++) {
-                    out[i][j] = a[i][0] * b[0][j] + a[i][1] * b[1][j] + a[i][2] * b[2][j];
-                }
+        function resolveLighting(preset, ambient, key, fill, rim) {
+            if (preset === "flat") {
+                return [Math.max(ambient, 0.6), key * 0.55, Math.max(fill, key * 0.45), rim * 0.15];
             }
-            return out;
-        }
-
-        function matVec3(m, v) {
-            return [
-                m[0][0] * v[0] + m[0][1] * v[1] + m[0][2] * v[2],
-                m[1][0] * v[0] + m[1][1] * v[1] + m[1][2] * v[2],
-                m[2][0] * v[0] + m[2][1] * v[1] + m[2][2] * v[2],
-            ];
-        }
-
-        function eulerDegToMatrix(pitchDeg, yawDeg, rollDeg) {
-            const ax = deg2rad(pitchDeg);
-            const ay = deg2rad(yawDeg);
-            const az = deg2rad(rollDeg);
-            const cx = Math.cos(ax);
-            const sx = Math.sin(ax);
-            const cy = Math.cos(ay);
-            const sy = Math.sin(ay);
-            const cz = Math.cos(az);
-            const sz = Math.sin(az);
-            const rxm = [[1, 0, 0], [0, cx, -sx], [0, sx, cx]];
-            const rym = [[cy, 0, sy], [0, 1, 0], [-sy, 0, cy]];
-            const rzm = [[cz, -sz, 0], [sz, cz, 0], [0, 0, 1]];
-            return matMul3(matMul3(rzm, rym), rxm);
-        }
-
-        function orbitAxes(yawDeg, pitchDeg) {
-            const m = eulerDegToMatrix(pitchDeg, yawDeg, 0);
-            return {
-                right: matVec3(m, [1, 0, 0]),
-                down: matVec3(m, [0, 1, 0]),
-                forward: matVec3(m, [0, 0, 1]),
-            };
-        }
-
-        function applyRollToBasisMatrix(basis, rollDeg) {
-            const az = deg2rad(rollDeg);
-            const cr = Math.cos(az);
-            const sr = Math.sin(az);
-            const refRight = matVec3(basis, [1, 0, 0]);
-            const refDown = matVec3(basis, [0, 1, 0]);
-            const forward = matVec3(basis, [0, 0, 1]);
-            const right = [
-                refRight[0] * cr + refDown[0] * sr,
-                refRight[1] * cr + refDown[1] * sr,
-                refRight[2] * cr + refDown[2] * sr,
-            ];
-            const down = [
-                refDown[0] * cr - refRight[0] * sr,
-                refDown[1] * cr - refRight[1] * sr,
-                refDown[2] * cr - refRight[2] * sr,
-            ];
-            return [
-                [right[0], down[0], forward[0]],
-                [right[1], down[1], forward[1]],
-                [right[2], down[2], forward[2]],
-            ];
-        }
-
-        function cameraAxes(yawDeg, pitchDeg, rollDeg) {
-            const basis = eulerDegToMatrix(pitchDeg, yawDeg, 0);
-            const m = applyRollToBasisMatrix(basis, rollDeg);
-            return {
-                right: matVec3(m, [1, 0, 0]),
-                down: matVec3(m, [0, 1, 0]),
-                forward: matVec3(m, [0, 0, 1]),
-            };
-        }
-
-        function stateToCamera(state) {
-            const pivot = [state.pivot_x, state.pivot_y, state.pivot_z];
-            const orbit = orbitAxes(state.yaw_deg, state.pitch_deg);
-            const forwardNoRoll = normalize3(orbit.forward);
-            const position = [
-                pivot[0] - forwardNoRoll[0] * state.distance,
-                pivot[1] - forwardNoRoll[1] * state.distance,
-                pivot[2] - forwardNoRoll[2] * state.distance,
-            ];
-            const axes = cameraAxes(state.yaw_deg, state.pitch_deg, state.roll_deg);
-            return {
-                pivot,
-                position,
-                right: normalize3(axes.right, [1, 0, 0]),
-                down: normalize3(axes.down, [0, 1, 0]),
-                forward: normalize3(axes.forward, [0, 0, 1]),
-            };
-        }
-
-        function parseCameraState(raw, fallback) {
-            const parsed = parseJson(raw, null);
-            if (!parsed || typeof parsed !== "object") {
-                return fallback;
+            if (preset === "dramatic") {
+                return [ambient * 0.45, key * 1.35, fill * 0.35, Math.max(rim, key * 0.9)];
             }
-            const out = {
-                pivot_x: Number(parsed.pivot_x) || 0,
-                pivot_y: Number(parsed.pivot_y) || 0,
-                pivot_z: Number(parsed.pivot_z) || 0,
-                yaw_deg: Number(parsed.yaw_deg) || 0,
-                pitch_deg: Number(parsed.pitch_deg) || 0,
-                roll_deg: Number(parsed.roll_deg) || 0,
-                distance: Number(parsed.distance) || 0,
-            };
-            return out;
+            return [ambient, key, fill, rim];
         }
 
-        function resizeCanvases() {
-            const rect = stage.getBoundingClientRect();
-            const width = Math.max(1, Math.round(rect.width));
-            const height = Math.max(1, Math.round(rect.height));
-            if (canvas.width !== width || canvas.height !== height) {
-                canvas.width = width;
-                canvas.height = height;
-                pivotCrossCanvas.width = width;
-                pivotCrossCanvas.height = height;
-                requestRender();
-            }
+        function sphericalOffset(yawDeg, pitchDeg, radius) {
+            const yaw = deg2rad(yawDeg);
+            const pitch = deg2rad(pitchDeg);
+            return new THREE.Vector3(
+                radius * Math.cos(pitch) * Math.sin(yaw),
+                radius * Math.sin(pitch),
+                radius * Math.cos(pitch) * Math.cos(yaw),
+            );
         }
 
-        function getRenderSize() {
+        function showError(message) {
+            errorEl.style.display = "flex";
+            errorEl.textContent = message;
+        }
+
+        function hideError() {
+            errorEl.style.display = "none";
+            errorEl.textContent = "";
+        }
+
+        function getRenderIntrinsics() {
             const renderSize = parseJson(uiPayload?.render_size?.[0] || "{}", {});
             const width = Math.max(Number(renderSize.width) || 512, 1);
             const height = Math.max(Number(renderSize.height) || 512, 1);
@@ -278,272 +175,320 @@
             };
         }
 
-        function projectPoint(point, camera, intr) {
-            const rel = [
-                point[0] - camera.position[0],
-                point[1] - camera.position[1],
-                point[2] - camera.position[2],
-            ];
-            const x = dot3(rel, camera.right);
-            const y = dot3(rel, camera.down);
-            const z = dot3(rel, camera.forward);
-            if (z <= 1e-4) {
+        function updateAspectBox() {
+            const intr = getRenderIntrinsics();
+            root.style.setProperty("--sam-ar", `${intr.width / intr.height}`);
+        }
+
+        function ensureViewer() {
+            if (renderer) {
+                return;
+            }
+            renderer = new THREE.WebGLRenderer({
+                canvas,
+                antialias: true,
+                alpha: false,
+                preserveDrawingBuffer: false,
+            });
+            renderer.setPixelRatio(window.devicePixelRatio || 1);
+            renderer.outputColorSpace = THREE.SRGBColorSpace;
+
+            scene = new THREE.Scene();
+            camera = new THREE.PerspectiveCamera(45, 1, 0.01, 10000);
+            camera.position.set(0, 0, 2);
+            camera.up.set(0, 1, 0);
+
+            ambientLight = new THREE.AmbientLight(0xffffff, 0.35);
+            keyLight = new THREE.PointLight(0xffffff, 14.0, 0, 2);
+            fillLight = new THREE.PointLight(0xffffff, 6.0, 0, 2);
+            rimLight = new THREE.PointLight(0xffffff, 8.0, 0, 2);
+            scene.add(ambientLight, keyLight, fillLight, rimLight);
+
+            controls = new ArcballControls(camera, renderer.domElement, scene);
+            controls.enableAnimations = false;
+            controls.setGizmosVisible(false);
+            controls.addEventListener("change", () => {
+                emitInteractiveState();
+                requestRender();
+            });
+
+            window.addEventListener("resize", () => {
+                resizeRenderer();
+                requestRender();
+            });
+        }
+
+        function resizeRenderer() {
+            if (!renderer) {
+                return;
+            }
+            const rect = stage.getBoundingClientRect();
+            const width = Math.max(Math.round(rect.width), 1);
+            const height = Math.max(Math.round(rect.height), 1);
+            renderer.setSize(width, height, false);
+        }
+
+        function applyProjection() {
+            const intr = getRenderIntrinsics();
+            const near = 0.01;
+            const far = 10000.0;
+            const left = (-intr.cx * near) / intr.fx;
+            const right = ((intr.width - intr.cx) * near) / intr.fx;
+            const top = (intr.cy * near) / intr.fy;
+            const bottom = (-(intr.height - intr.cy) * near) / intr.fy;
+            camera.near = near;
+            camera.far = far;
+            camera.projectionMatrix.makePerspective(left, right, top, bottom, near, far);
+            camera.projectionMatrixInverse.copy(camera.projectionMatrix).invert();
+        }
+
+        function stateFromCamera() {
+            if (!camera || !controls) {
                 return null;
             }
+            const target = controls.target.clone();
             return {
-                u: intr.fx * (x / z) + intr.cx,
-                v: intr.fy * (y / z) + intr.cy,
-                z,
+                camera_position: [camera.position.x, camera.position.y, camera.position.z],
+                camera_target: [target.x, target.y, target.z],
+                camera_up: [camera.up.x, camera.up.y, camera.up.z],
+                pivot_x: target.x,
+                pivot_y: target.y,
+                pivot_z: target.z,
+                distance: camera.position.distanceTo(target),
             };
         }
 
-        function drawPivotCross(camera, intr, scaleX, scaleY) {
-            pivotCrossCtx.clearRect(0, 0, pivotCrossCanvas.width, pivotCrossCanvas.height);
-            if (!currentPreviewState) {
-                return;
+        function parseCameraState(raw, fallback = null) {
+            const parsed = parseJson(raw, null);
+            if (!parsed || typeof parsed !== "object") {
+                return fallback;
             }
-            const pivot = [currentPreviewState.pivot_x, currentPreviewState.pivot_y, currentPreviewState.pivot_z];
-            const center = projectPoint(pivot, camera, intr);
-            if (!center) {
-                return;
+            if (Array.isArray(parsed.camera_position) && Array.isArray(parsed.camera_target)) {
+                return {
+                    camera_position: [
+                        Number(parsed.camera_position[0]) || 0,
+                        Number(parsed.camera_position[1]) || 0,
+                        Number(parsed.camera_position[2]) || 0,
+                    ],
+                    camera_target: [
+                        Number(parsed.camera_target[0]) || 0,
+                        Number(parsed.camera_target[1]) || 0,
+                        Number(parsed.camera_target[2]) || 0,
+                    ],
+                    camera_up: Array.isArray(parsed.camera_up) && parsed.camera_up.length === 3
+                        ? [
+                            Number(parsed.camera_up[0]) || 0,
+                            Number(parsed.camera_up[1]) || 1,
+                            Number(parsed.camera_up[2]) || 0,
+                        ]
+                        : [0, 1, 0],
+                    pivot_x: Number(parsed.pivot_x) || 0,
+                    pivot_y: Number(parsed.pivot_y) || 0,
+                    pivot_z: Number(parsed.pivot_z) || 0,
+                    distance: Number(parsed.distance) || 0,
+                };
             }
-            const axisLength = Math.max(currentPreviewState.distance * 0.08, 0.05);
-            const axes = [
-                { color: "#ff5a5a", point: [pivot[0] + axisLength, pivot[1], pivot[2]] },
-                { color: "#61e36b", point: [pivot[0], pivot[1] + axisLength, pivot[2]] },
-                { color: "#63a6ff", point: [pivot[0], pivot[1], pivot[2] + axisLength] },
-            ];
-            const cx = center.u * scaleX;
-            const cy = center.v * scaleY;
-            for (const axis of axes) {
-                const p = projectPoint(axis.point, camera, intr);
-                if (!p) {
-                    continue;
-                }
-                pivotCrossCtx.strokeStyle = axis.color;
-                pivotCrossCtx.lineWidth = 2;
-                pivotCrossCtx.beginPath();
-                pivotCrossCtx.moveTo(cx, cy);
-                pivotCrossCtx.lineTo(p.u * scaleX, p.v * scaleY);
-                pivotCrossCtx.stroke();
-            }
+            return fallback;
         }
 
-        function renderPreview() {
-            resizeCanvases();
-            if (!uiPayload || !currentPreviewState) {
-                ctx.fillStyle = "#101010";
-                ctx.fillRect(0, 0, canvas.width, canvas.height);
+        function applyCameraState(state) {
+            if (!state || !camera || !controls) {
                 return;
             }
+            const position = vec3From(state.camera_position, [0, 0, 2]);
+            const target = vec3From(state.camera_target, [0, 0, 0]);
+            const up = vec3From(state.camera_up, [0, 1, 0]);
 
-            const intr = getRenderSize();
-            const bg = parseJson(uiPayload?.bg_color?.[0] || "[16,16,16]", [16, 16, 16]);
-            ctx.fillStyle = `rgb(${bg[0] || 16}, ${bg[1] || 16}, ${bg[2] || 16})`;
-            ctx.fillRect(0, 0, canvas.width, canvas.height);
+            controls.enabled = false;
+            camera.position.copy(position);
+            camera.up.copy(up);
+            controls.target.copy(target);
+            camera.lookAt(target);
+            camera.updateMatrixWorld(true);
+            controls.update();
+            controls.enabled = true;
+        }
 
-            const camera = stateToCamera(currentPreviewState);
-            const scaleX = canvas.width / intr.width;
-            const scaleY = canvas.height / intr.height;
+        function applyMesh() {
+            const meshPayloadRaw = uiPayload?.preview_mesh?.[0] || "";
+            if (!meshPayloadRaw || meshPayloadRaw === lastMeshSignature) {
+                return;
+            }
+            lastMeshSignature = meshPayloadRaw;
 
-            if (previewPoints && previewPoints.length) {
-                const projected = [];
-                for (let i = 0; i < previewPoints.length; i++) {
-                    const p = projectPoint(previewPoints[i], camera, intr);
-                    if (!p) {
-                        continue;
-                    }
-                    projected.push(p);
-                }
-                projected.sort((a, b) => b.z - a.z);
-                for (const p of projected) {
-                    const alpha = clamp(1.2 - (p.z / Math.max(currentPreviewState.distance * 2.0, 1e-3)), 0.08, 0.95);
-                    const radius = clamp(3.0 - Math.log(Math.max(p.z, 1e-3)) * 0.35, 0.6, 2.8);
-                    ctx.fillStyle = `rgba(236,236,236,${alpha.toFixed(3)})`;
-                    ctx.beginPath();
-                    ctx.arc(p.u * scaleX, p.v * scaleY, radius, 0, Math.PI * 2);
-                    ctx.fill();
-                }
+            const meshPayload = parseJson(meshPayloadRaw, null);
+            if (!meshPayload || !Array.isArray(meshPayload.vertices) || !Array.isArray(meshPayload.faces)) {
+                throw new Error("Invalid preview mesh payload");
             }
 
-            drawPivotCross(camera, intr, scaleX, scaleY);
+            if (mesh) {
+                scene.remove(mesh);
+                mesh.geometry.dispose();
+                mesh.material.dispose();
+                mesh = null;
+            }
 
-            if (nodeState?.show_viewer_hud) {
-                hud.style.display = "block";
-                hud.innerHTML = `
-                    <div>yaw ${currentPreviewState.yaw_deg.toFixed(1)} pitch ${currentPreviewState.pitch_deg.toFixed(1)} roll ${currentPreviewState.roll_deg.toFixed(1)}</div>
-                    <div>distance ${currentPreviewState.distance.toFixed(3)}</div>
-                    <div>pivot ${currentPreviewState.pivot_x.toFixed(3)}, ${currentPreviewState.pivot_y.toFixed(3)}, ${currentPreviewState.pivot_z.toFixed(3)}</div>
-                    <div style="opacity:.75">${nodeState?.use_interactive_view ? "interactive view active" : "parameter view active"}</div>
-                    <div style="opacity:.75">LMB orbit | RMB/Shift pan | MMB roll | Wheel dolly</div>
-                `;
-            } else {
+            const vertices = new Float32Array(meshPayload.vertices.flat());
+            const flatFaces = meshPayload.faces.flat();
+            const faces = flatFaces.length > 65535 ? new Uint32Array(flatFaces) : new Uint16Array(flatFaces);
+
+            const geometry = new THREE.BufferGeometry();
+            geometry.setAttribute("position", new THREE.BufferAttribute(vertices, 3));
+            geometry.setIndex(new THREE.BufferAttribute(faces, 1));
+            geometry.computeVertexNormals();
+            geometry.computeBoundingSphere();
+
+            const material = new THREE.MeshStandardMaterial({
+                color: new THREE.Color(
+                    clamp((Number(nodeState?.mesh_r) || 235) / 255, 0, 1),
+                    clamp((Number(nodeState?.mesh_g) || 235) / 255, 0, 1),
+                    clamp((Number(nodeState?.mesh_b) || 235) / 255, 0, 1),
+                ),
+                metalness: 0.0,
+                roughness: 0.8,
+                side: THREE.DoubleSide,
+            });
+            mesh = new THREE.Mesh(geometry, material);
+            scene.add(mesh);
+        }
+
+        function applyVisualSettings() {
+            const bg = parseJson(uiPayload?.bg_color?.[0] || "[]", []);
+            const bgColor = new THREE.Color(
+                clamp((Number(bg[0]) || Number(nodeState?.bg_r) || 16) / 255, 0, 1),
+                clamp((Number(bg[1]) || Number(nodeState?.bg_g) || 16) / 255, 0, 1),
+                clamp((Number(bg[2]) || Number(nodeState?.bg_b) || 16) / 255, 0, 1),
+            );
+            renderer.setClearColor(bgColor, 1.0);
+
+            if (mesh && mesh.material) {
+                mesh.material.color.setRGB(
+                    clamp((Number(nodeState?.mesh_r) || 235) / 255, 0, 1),
+                    clamp((Number(nodeState?.mesh_g) || 235) / 255, 0, 1),
+                    clamp((Number(nodeState?.mesh_b) || 235) / 255, 0, 1),
+                );
+            }
+
+            const target = controls?.target || new THREE.Vector3();
+            const meshRadius = mesh?.geometry?.boundingSphere?.radius || 1.0;
+            const lightRadius = Math.max(meshRadius * 2.5, 2.5);
+            const [ambient, key, fill, rim] = resolveLighting(
+                String(nodeState?.lighting_preset || "studio"),
+                Number(nodeState?.ambient_intensity ?? 0.35),
+                Number(nodeState?.key_intensity ?? 14.0),
+                Number(nodeState?.fill_intensity ?? 6.0),
+                Number(nodeState?.rim_intensity ?? 8.0),
+            );
+
+            ambientLight.intensity = ambient;
+            keyLight.intensity = key;
+            fillLight.intensity = fill;
+            rimLight.intensity = rim;
+
+            const keyYaw = Number(nodeState?.key_yaw ?? 35.0);
+            const keyPitch = Number(nodeState?.key_pitch ?? 35.0);
+            keyLight.position.copy(target).add(sphericalOffset(keyYaw, keyPitch, lightRadius));
+            fillLight.position.copy(target).add(sphericalOffset(keyYaw - 55.0, Math.max(10.0, keyPitch * 0.45), lightRadius * 0.92));
+            rimLight.position.copy(target).add(sphericalOffset(keyYaw + 180.0, Math.max(15.0, keyPitch * 0.7), lightRadius * 1.08));
+        }
+
+        function updateHud() {
+            if (!nodeState?.show_viewer_hud) {
                 hud.style.display = "none";
-            }
-        }
-
-        function postStateToParent() {
-            if (!nodeState || !currentPreviewState) {
                 return;
             }
+            hud.style.display = "block";
+            const state = stateFromCamera();
+            hud.innerHTML = `
+                <div>cam ${state.camera_position.map((v) => v.toFixed(3)).join(", ")}</div>
+                <div>target ${state.camera_target.map((v) => v.toFixed(3)).join(", ")}</div>
+                <div>up ${state.camera_up.map((v) => v.toFixed(3)).join(", ")}</div>
+                <div style="opacity:.75">${nodeState?.use_interactive_view ? "interactive view active" : "parameter view active"}</div>
+                <div style="opacity:.75">Arcball: drag to tumble, wheel to dolly, right-drag to pan</div>
+            `;
+        }
+
+        function requestRender() {
+            if (frameRequested) {
+                return;
+            }
+            frameRequested = true;
+            requestAnimationFrame(() => {
+                frameRequested = false;
+                if (!renderer || !scene || !camera) {
+                    return;
+                }
+                resizeRenderer();
+                applyProjection();
+                renderer.render(scene, camera);
+                updateHud();
+            });
+        }
+
+        function emitInteractiveState() {
+            const state = stateFromCamera();
+            if (!state) {
+                return;
+            }
+            const serialized = JSON.stringify(state);
+            if (serialized === lastSentInteractiveState) {
+                return;
+            }
+            lastSentInteractiveState = serialized;
             parent.postMessage({
                 type: "SAM3D_OFFSET_VIEWER_STATE",
-                nodeId: nodeState.nodeId,
-                interactive_state: JSON.stringify(currentPreviewState),
+                nodeId: Number(nodeState?.nodeId || 0),
+                interactive_state: serialized,
             }, "*");
         }
 
-        function updateTrackedOrbit(dx, dy) {
-            currentPreviewState.yaw_deg += dx * ORBIT_STEP_RAD * RAD_TO_DEG;
-            currentPreviewState.pitch_deg = clamp(
-                currentPreviewState.pitch_deg - dy * ORBIT_STEP_RAD * RAD_TO_DEG,
-                -89.0,
-                89.0,
-            );
-            postStateToParent();
-            requestRender();
-        }
-
-        function updateTrackedPan(dx, dy) {
-            const axes = cameraAxes(currentPreviewState.yaw_deg, currentPreviewState.pitch_deg, currentPreviewState.roll_deg);
-            const distanceScale = Math.max(currentPreviewState.distance, 0.25) * PAN_FACTOR;
-            const tx = axes.right[0] * (-dx * distanceScale) + (-axes.down[0]) * (-dy * distanceScale);
-            const ty = axes.right[1] * (-dx * distanceScale) + (-axes.down[1]) * (-dy * distanceScale);
-            const tz = axes.right[2] * (-dx * distanceScale) + (-axes.down[2]) * (-dy * distanceScale);
-            currentPreviewState.pivot_x += tx;
-            currentPreviewState.pivot_y += ty;
-            currentPreviewState.pivot_z += tz;
-            postStateToParent();
-            requestRender();
-        }
-
-        function updateTrackedRoll(dx) {
-            currentPreviewState.roll_deg += dx * ORBIT_STEP_RAD * RAD_TO_DEG;
-            postStateToParent();
-            requestRender();
-        }
-
-        function endPointerTracking() {
-            if (!pointerTracker) {
-                return;
-            }
-            const cap = pointerTracker.captureId;
-            pointerTracker = null;
-            if (cap != null && typeof canvas.releasePointerCapture === "function") {
-                try {
-                    canvas.releasePointerCapture(cap);
-                } catch (_) {}
-            }
-        }
-
-        canvas.addEventListener("contextmenu", (event) => {
-            event.preventDefault();
-        });
-
-        canvas.addEventListener("pointerdown", (event) => {
-            if (!currentPreviewState) {
-                return;
-            }
-            let captureId = null;
-            if (typeof event.pointerId === "number" && typeof canvas.setPointerCapture === "function") {
-                try {
-                    canvas.setPointerCapture(event.pointerId);
-                    captureId = event.pointerId;
-                } catch (_) {}
-            }
-            pointerTracker = {
-                x: event.clientX,
-                y: event.clientY,
-                button: event.button,
-                shift: !!event.shiftKey,
-                captureId,
-            };
-            event.preventDefault();
-        }, true);
-
-        canvas.addEventListener("lostpointercapture", () => {
-            endPointerTracking();
-        });
-
-        window.addEventListener("pointerup", (event) => {
-            if (!pointerTracker) {
-                return;
-            }
-            if (pointerTracker.captureId != null && event.pointerId !== pointerTracker.captureId) {
-                return;
-            }
-            endPointerTracking();
-        });
-
-        window.addEventListener("pointercancel", (event) => {
-            if (!pointerTracker) {
-                return;
-            }
-            if (pointerTracker.captureId != null && event.pointerId !== pointerTracker.captureId) {
-                return;
-            }
-            endPointerTracking();
-        });
-
-        window.addEventListener("pointermove", (event) => {
-            if (!pointerTracker || !currentPreviewState) {
-                return;
-            }
-            const dx = event.clientX - pointerTracker.x;
-            const dy = event.clientY - pointerTracker.y;
-            pointerTracker.x = event.clientX;
-            pointerTracker.y = event.clientY;
-
-            if (pointerTracker.button === 2 || pointerTracker.shift) {
-                updateTrackedPan(dx, dy);
-            } else if (pointerTracker.button === 1) {
-                updateTrackedRoll(dx);
-            } else {
-                updateTrackedOrbit(dx, dy);
-            }
-            event.preventDefault();
-        });
-
-        canvas.addEventListener("wheel", (event) => {
-            if (!currentPreviewState) {
-                return;
-            }
-            currentPreviewState.distance = clamp(
-                currentPreviewState.distance * Math.exp(event.deltaY * WHEEL_STEP),
-                0.05,
-                1.0e6,
-            );
-            postStateToParent();
-            requestRender();
-            event.preventDefault();
-        }, { passive: false });
-
-        function handleStateMessage(message) {
-            uiPayload = message.ui || {};
-            nodeState = message.state || {};
-            const renderSize = getRenderSize();
-            root.style.setProperty("--sam-ar", String(renderSize.width / Math.max(renderSize.height, 1)));
-
-            const sig = JSON.stringify({
-                points: uiPayload.preview_points?.[0] || "",
-                active: uiPayload.active_camera_state?.[0] || "",
-                interactive: nodeState.interactive_state || "",
-                useInteractive: !!nodeState.use_interactive_view,
-            });
-            if (sig !== lastSignature) {
-                previewPoints = parseJson(uiPayload.preview_points?.[0] || "[]", []);
-                const fallbackState = parseCameraState(uiPayload.parameter_camera_state?.[0] || "{}", {
-                    pivot_x: 0, pivot_y: 0, pivot_z: 0, yaw_deg: 0, pitch_deg: 0, roll_deg: 0, distance: 2,
-                });
-                const interactive = parseCameraState(nodeState.interactive_state || "", fallbackState);
-                if (nodeState.use_interactive_view && interactive.distance > 1e-5) {
-                    currentPreviewState = interactive;
-                } else {
-                    currentPreviewState = parseCameraState(uiPayload.active_camera_state?.[0] || "{}", fallbackState);
+        function chooseCameraState() {
+            const fallback = parseCameraState(uiPayload?.parameter_camera_state?.[0] || "", null);
+            if (nodeState?.use_interactive_view) {
+                const interactive = parseCameraState(nodeState?.interactive_state || "", null);
+                if (interactive) {
+                    return interactive;
                 }
-                lastSignature = sig;
             }
-            requestRender();
+            const active = parseCameraState(uiPayload?.active_camera_state?.[0] || "", fallback);
+            return active || fallback;
+        }
+
+        function handleStateMessage(data) {
+            uiPayload = data.ui || {};
+            nodeState = data.state || {};
+            nodeState.nodeId = Number(nodeState.nodeId || 0);
+
+            const signature = JSON.stringify({
+                mesh: uiPayload.preview_mesh?.[0] || "",
+                active: uiPayload.active_camera_state?.[0] || "",
+                param: uiPayload.parameter_camera_state?.[0] || "",
+                intr: uiPayload.render_size?.[0] || "",
+                bg: uiPayload.bg_color?.[0] || "",
+                state: nodeState,
+            });
+            if (signature === lastStateSignature) {
+                return;
+            }
+            lastStateSignature = signature;
+
+            try {
+                hideError();
+                ensureViewer();
+                updateAspectBox();
+                applyMesh();
+                const cameraState = chooseCameraState();
+                const cameraSig = JSON.stringify(cameraState || {});
+                if (cameraState && cameraSig !== lastAppliedCameraSignature) {
+                    lastAppliedCameraSignature = cameraSig;
+                    applyCameraState(cameraState);
+                }
+                applyVisualSettings();
+                requestRender();
+            } catch (error) {
+                console.error(error);
+                showError(error?.message || String(error));
+            }
         }
 
         window.addEventListener("message", (event) => {
@@ -551,24 +496,8 @@
             if (!data || data.type !== "SAM3D_OFFSET_STATE") {
                 return;
             }
-            try {
-                errorEl.style.display = "none";
-                handleStateMessage(data);
-            } catch (err) {
-                errorEl.style.display = "flex";
-                errorEl.textContent = String(err?.message || err);
-            }
+            handleStateMessage(data);
         });
-
-        function frame() {
-            if (needsRender) {
-                needsRender = false;
-                renderPreview();
-            }
-            requestAnimationFrame(frame);
-        }
-
-        requestAnimationFrame(frame);
     </script>
 </body>
 </html>
