@@ -400,43 +400,79 @@
         }
 
         function applyVisualSettings() {
-            const bg = parseJson(uiPayload?.bg_color?.[0] || "[]", []);
+            const previewLighting = parseJson(uiPayload?.preview_lighting?.[0] || "{}", {});
+            const bg = Array.isArray(previewLighting.bg_color)
+                ? previewLighting.bg_color
+                : parseJson(uiPayload?.bg_color?.[0] || "[]", []);
             const bgColor = new THREE.Color(
                 clamp((Number(bg[0]) || Number(nodeState?.bg_r) || 16) / 255, 0, 1),
                 clamp((Number(bg[1]) || Number(nodeState?.bg_g) || 16) / 255, 0, 1),
                 clamp((Number(bg[2]) || Number(nodeState?.bg_b) || 16) / 255, 0, 1),
             );
             renderer.setClearColor(bgColor, 1.0);
+            const bgCss = `rgb(${Math.round(bgColor.r * 255)}, ${Math.round(bgColor.g * 255)}, ${Math.round(bgColor.b * 255)})`;
+            document.body.style.background = bgCss;
+            root.style.background = bgCss;
+            stage.style.background = bgCss;
+            canvas.style.background = bgCss;
 
             if (mesh && mesh.material) {
+                const meshColor = Array.isArray(previewLighting.mesh_color) ? previewLighting.mesh_color : null;
                 mesh.material.color.setRGB(
-                    clamp((Number(nodeState?.mesh_r) || 235) / 255, 0, 1),
-                    clamp((Number(nodeState?.mesh_g) || 235) / 255, 0, 1),
-                    clamp((Number(nodeState?.mesh_b) || 235) / 255, 0, 1),
+                    clamp((Number(meshColor?.[0]) || Number(nodeState?.mesh_r) || 235) / 255, 0, 1),
+                    clamp((Number(meshColor?.[1]) || Number(nodeState?.mesh_g) || 235) / 255, 0, 1),
+                    clamp((Number(meshColor?.[2]) || Number(nodeState?.mesh_b) || 235) / 255, 0, 1),
                 );
             }
 
             const target = controls?.target || new THREE.Vector3();
-            const meshRadius = mesh?.geometry?.boundingSphere?.radius || 1.0;
-            const lightRadius = Math.max(meshRadius * 2.5, 2.5);
-            const [ambient, key, fill, rim] = resolveLighting(
-                String(nodeState?.lighting_preset || "studio"),
-                Number(nodeState?.ambient_intensity ?? 0.35),
-                Number(nodeState?.key_intensity ?? 14.0),
-                Number(nodeState?.fill_intensity ?? 6.0),
-                Number(nodeState?.rim_intensity ?? 8.0),
-            );
+            const [ambient, key, fill, rim] = Array.isArray(previewLighting.bg_color)
+                ? [
+                    Number(previewLighting.ambient_intensity ?? 0.35),
+                    Number(previewLighting.key_intensity ?? 14.0),
+                    Number(previewLighting.fill_intensity ?? 6.0),
+                    Number(previewLighting.rim_intensity ?? 8.0),
+                ]
+                : resolveLighting(
+                    String(nodeState?.lighting_preset || "studio"),
+                    Number(nodeState?.ambient_intensity ?? 0.35),
+                    Number(nodeState?.key_intensity ?? 14.0),
+                    Number(nodeState?.fill_intensity ?? 6.0),
+                    Number(nodeState?.rim_intensity ?? 8.0),
+                );
 
             ambientLight.intensity = ambient;
             keyLight.intensity = key;
             fillLight.intensity = fill;
             rimLight.intensity = rim;
 
-            const keyYaw = Number(nodeState?.key_yaw ?? 35.0);
-            const keyPitch = Number(nodeState?.key_pitch ?? 35.0);
-            keyLight.position.copy(target).add(sphericalOffset(keyYaw, keyPitch, lightRadius));
-            fillLight.position.copy(target).add(sphericalOffset(keyYaw - 55.0, Math.max(10.0, keyPitch * 0.45), lightRadius * 0.92));
-            rimLight.position.copy(target).add(sphericalOffset(keyYaw + 180.0, Math.max(15.0, keyPitch * 0.7), lightRadius * 1.08));
+            if (Array.isArray(previewLighting.key_position)) {
+                keyLight.position.copy(vec3From(previewLighting.key_position));
+            } else {
+                const meshRadius = mesh?.geometry?.boundingSphere?.radius || 1.0;
+                const lightRadius = Math.max(meshRadius * 2.5, 2.5);
+                const keyYaw = Number(nodeState?.key_yaw ?? 35.0);
+                const keyPitch = Number(nodeState?.key_pitch ?? 35.0);
+                keyLight.position.copy(target).add(sphericalOffset(keyYaw, keyPitch, lightRadius));
+            }
+            if (Array.isArray(previewLighting.fill_position)) {
+                fillLight.position.copy(vec3From(previewLighting.fill_position));
+            } else {
+                const meshRadius = mesh?.geometry?.boundingSphere?.radius || 1.0;
+                const lightRadius = Math.max(meshRadius * 2.5, 2.5);
+                const keyYaw = Number(nodeState?.key_yaw ?? 35.0);
+                const keyPitch = Number(nodeState?.key_pitch ?? 35.0);
+                fillLight.position.copy(target).add(sphericalOffset(keyYaw - 55.0, Math.max(10.0, keyPitch * 0.45), lightRadius * 0.92));
+            }
+            if (Array.isArray(previewLighting.rim_position)) {
+                rimLight.position.copy(vec3From(previewLighting.rim_position));
+            } else {
+                const meshRadius = mesh?.geometry?.boundingSphere?.radius || 1.0;
+                const lightRadius = Math.max(meshRadius * 2.5, 2.5);
+                const keyYaw = Number(nodeState?.key_yaw ?? 35.0);
+                const keyPitch = Number(nodeState?.key_pitch ?? 35.0);
+                rimLight.position.copy(target).add(sphericalOffset(keyYaw + 180.0, Math.max(15.0, keyPitch * 0.7), lightRadius * 1.08));
+            }
         }
 
         function updateHud() {

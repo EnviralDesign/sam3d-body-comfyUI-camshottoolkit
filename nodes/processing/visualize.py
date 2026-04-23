@@ -710,21 +710,33 @@ class SAM3DBodyRenderOffsetView:
 
         mesh_extent = float(np.max(np.ptp(verts_render, axis=0)))
         light_radius = max(mesh_extent * 2.5, 2.5)
+        preview_lighting = {
+            "ambient_intensity": float(ambient_intensity),
+            "key_intensity": float(key_intensity),
+            "fill_intensity": float(fill_intensity),
+            "rim_intensity": float(rim_intensity),
+            "bg_color": [int(bg_r), int(bg_g), int(bg_b)],
+            "mesh_color": [int(mesh_r), int(mesh_g), int(mesh_b)],
+            "light_radius": float(light_radius),
+        }
 
         if key_intensity > 0.0:
             key_pos = pivot + _spherical_offset(key_yaw, key_pitch, light_radius)
+            preview_lighting["key_position"] = [float(x) for x in key_pos]
             scene.add(
                 pyrender.PointLight(color=np.ones(3), intensity=key_intensity),
                 pose=_camera_pose_look_at(key_pos, pivot, world_up=world_up),
             )
         if fill_intensity > 0.0:
             fill_pos = pivot + _spherical_offset(key_yaw - 55.0, max(10.0, key_pitch * 0.45), light_radius * 0.92)
+            preview_lighting["fill_position"] = [float(x) for x in fill_pos]
             scene.add(
                 pyrender.PointLight(color=np.ones(3), intensity=fill_intensity),
                 pose=_camera_pose_look_at(fill_pos, pivot, world_up=world_up),
             )
         if rim_intensity > 0.0:
             rim_pos = pivot + _spherical_offset(key_yaw + 180.0, max(15.0, key_pitch * 0.7), light_radius * 1.08)
+            preview_lighting["rim_position"] = [float(x) for x in rim_pos]
             scene.add(
                 pyrender.PointLight(color=np.ones(3), intensity=rim_intensity),
                 pose=_camera_pose_look_at(rim_pos, pivot, world_up=world_up),
@@ -776,6 +788,7 @@ class SAM3DBodyRenderOffsetView:
                 "cy": float(cy),
             })],
             "bg_color": [json.dumps([int(bg_r), int(bg_g), int(bg_b)])],
+            "preview_lighting": [json.dumps(preview_lighting)],
         }
 
         return {"ui": ui_data, "result": (result, json.dumps(camera_info))}
