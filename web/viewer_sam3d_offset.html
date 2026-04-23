@@ -141,6 +141,11 @@
             return Math.max(min, Math.min(max, value));
         }
 
+        function numberOr(value, fallback) {
+            const n = Number(value);
+            return Number.isFinite(n) ? n : fallback;
+        }
+
         function deg2rad(value) {
             return (value * Math.PI) / 180.0;
         }
@@ -178,9 +183,9 @@
                 return [38, 38, 38];
             }
             return [
-                Number(nodeState?.bg_r ?? 38),
-                Number(nodeState?.bg_g ?? 38),
-                Number(nodeState?.bg_b ?? 38),
+                numberOr(nodeState?.bg_r, 38),
+                numberOr(nodeState?.bg_g, 38),
+                numberOr(nodeState?.bg_b, 38),
             ];
         }
 
@@ -420,9 +425,9 @@
         function applyVisualSettings() {
             const bg = resolveBgRgb();
             const bgColor = new THREE.Color(
-                clamp((Number(bg[0]) || 16) / 255, 0, 1),
-                clamp((Number(bg[1]) || 16) / 255, 0, 1),
-                clamp((Number(bg[2]) || 16) / 255, 0, 1),
+                clamp(numberOr(bg[0], 16) / 255, 0, 1),
+                clamp(numberOr(bg[1], 16) / 255, 0, 1),
+                clamp(numberOr(bg[2], 16) / 255, 0, 1),
             );
             renderer.setClearColor(bgColor, 1.0);
             const bgCss = `rgb(${Math.round(bgColor.r * 255)}, ${Math.round(bgColor.g * 255)}, ${Math.round(bgColor.b * 255)})`;
@@ -433,9 +438,9 @@
 
             if (mesh && mesh.material) {
                 mesh.material.color.setRGB(
-                    clamp((Number(nodeState?.mesh_r) || 235) / 255, 0, 1),
-                    clamp((Number(nodeState?.mesh_g) || 235) / 255, 0, 1),
-                    clamp((Number(nodeState?.mesh_b) || 235) / 255, 0, 1),
+                    clamp(numberOr(nodeState?.mesh_r, 235) / 255, 0, 1),
+                    clamp(numberOr(nodeState?.mesh_g, 235) / 255, 0, 1),
+                    clamp(numberOr(nodeState?.mesh_b, 235) / 255, 0, 1),
                 );
             }
 
