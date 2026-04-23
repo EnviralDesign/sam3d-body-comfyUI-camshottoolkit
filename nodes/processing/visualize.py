@@ -203,6 +203,16 @@ def _to_float_vec3(value):
     return None
 
 
+def _to_float_mat4(value):
+    try:
+        arr = np.asarray(value, dtype=np.float32)
+    except Exception:
+        return None
+    if arr.shape != (4, 4):
+        return None
+    return arr
+
+
 def _resolve_lighting(preset, ambient, key, fill, rim):
     if preset == "flat":
         return max(ambient, 0.6), key * 0.55, max(fill, key * 0.45), rim * 0.15
@@ -216,15 +226,11 @@ def _parse_interactive_state(state_text):
         "pivot_x": 0.0,
         "pivot_y": 0.0,
         "pivot_z": 0.0,
-        "yaw_deg": 0.0,
-        "pitch_deg": 0.0,
-        "roll_deg": 0.0,
         "distance": 0.0,
+        "camera_pose": None,
         "camera_position": None,
         "camera_target": None,
         "camera_up": None,
-        "camera_right": None,
-        "camera_backward": None,
     }
     if not state_text:
         return default
@@ -233,9 +239,12 @@ def _parse_interactive_state(state_text):
         if not isinstance(data, dict):
             return default
         for key in default:
-            if key in data and key not in ("camera_position", "camera_target", "camera_up", "camera_right", "camera_backward"):
+            if key in data and key not in ("camera_pose", "camera_position", "camera_target", "camera_up"):
                 default[key] = float(data[key])
-        for key in ("camera_position", "camera_target", "camera_up", "camera_right", "camera_backward"):
+        parsed_pose = _to_float_mat4(data.get("camera_pose"))
+        if parsed_pose is not None:
+            default["camera_pose"] = parsed_pose
+        for key in ("camera_position", "camera_target", "camera_up"):
             parsed = _to_float_vec3(data.get(key))
             if parsed is not None:
                 default[key] = parsed
@@ -246,8 +255,11 @@ def _parse_interactive_state(state_text):
 
 def _state_has_explicit_camera(state):
     return (
-        _to_float_vec3(state.get("camera_position")) is not None
-        and _to_float_vec3(state.get("camera_target")) is not None
+        _to_float_mat4(state.get("camera_pose")) is not None
+        or (
+            _to_float_vec3(state.get("camera_position")) is not None
+            and _to_float_vec3(state.get("camera_target")) is not None
+        )
     )
 
 
@@ -265,18 +277,16 @@ def _camera_axes(yaw_deg, pitch_deg, roll_deg):
 
 def _state_to_camera_pose(state):
     if _state_has_explicit_camera(state):
-        position = _to_float_vec3(state.get("camera_position"))
-        target = _to_float_vec3(state.get("camera_target"))
-        up = _to_float_vec3(state.get("camera_up"))
-        right = _to_float_vec3(state.get("camera_right"))
-        backward = _to_float_vec3(state.get("camera_backward"))
-        if right is not None and up is not None and backward is not None:
-            pose = np.eye(4, dtype=np.float32)
-            pose[:3, 0] = _normalize(right, fallback=np.array([1.0, 0.0, 0.0], dtype=np.float32))
-            pose[:3, 1] = _normalize(up, fallback=np.array([0.0, 1.0, 0.0], dtype=np.float32))
-            pose[:3, 2] = _normalize(backward, fallback=np.array([0.0, 0.0, 1.0], dtype=np.float32))
-            pose[:3, 3] = position.astype(np.float32)
+        pose = _to_float_mat4(state.get("camera_pose"))
+        if pose is not None:
+            position = pose[:3, 3].astype(np.float32)
+            target = _to_float_vec3(state.get("camera_target"))
+            if target is None:
+                target = (position - pose[:3, 2]).astype(np.float32)
         else:
+            position = _to_float_vec3(state.get("camera_position"))
+            target = _to_float_vec3(state.get("camera_target"))
+            up = _to_float_vec3(state.get("camera_up"))
             if up is None:
                 up = np.array([0.0, 1.0, 0.0], dtype=np.float32)
             pose = _camera_pose_look_at(position, target, world_up=up)
@@ -295,23 +305,17 @@ def _camera_state_from_pose(position, target, up=None, legacy=None):
     position = np.asarray(position, dtype=np.float32)
     target = np.asarray(target, dtype=np.float32)
     up = np.asarray(up if up is not None else [0.0, 1.0, 0.0], dtype=np.float32)
-    backward = _normalize(position - target, fallback=np.array([0.0, 0.0, 1.0], dtype=np.float32))
-    right = np.cross(up, backward)
-    if np.linalg.norm(right) < 1e-6:
-        right = np.cross(np.array([0.0, 0.0, 1.0], dtype=np.float32), backward)
-    right = _normalize(right, fallback=np.array([1.0, 0.0, 0.0], dtype=np.float32))
-    true_up = _normalize(np.cross(backward, right), fallback=np.array([0.0, 1.0, 0.0], dtype=np.float32))
+    pose = _camera_pose_look_at(position, target, world_up=up)
 
     state = {
+        "camera_pose": pose.tolist(),
         "camera_position": [float(position[0]), float(position[1]), float(position[2])],
         "camera_target": [float(target[0]), float(target[1]), float(target[2])],
         "camera_up": [
-            float(true_up[0]),
-            float(true_up[1]),
-            float(true_up[2]),
+            float(pose[0, 1]),
+            float(pose[1, 1]),
+            float(pose[2, 1]),
         ],
-        "camera_right": [float(right[0]), float(right[1]), float(right[2])],
-        "camera_backward": [float(backward[0]), float(backward[1]), float(backward[2])],
         "pivot_x": float(target[0]),
         "pivot_y": float(target[1]),
         "pivot_z": float(target[2]),
@@ -322,12 +326,6 @@ def _camera_state_from_pose(position, target, up=None, legacy=None):
             "yaw_deg": float(legacy.get("yaw_deg", 0.0)),
             "pitch_deg": float(legacy.get("pitch_deg", 0.0)),
             "roll_deg": float(legacy.get("roll_deg", 0.0)),
-        })
-    else:
-        state.update({
-            "yaw_deg": 0.0,
-            "pitch_deg": 0.0,
-            "roll_deg": 0.0,
         })
     return state
 
@@ -466,10 +464,11 @@ class SAM3DBodyVisualize:
 
 class SAM3DBodyRenderOffsetView:
     """
-    Render a new calibrated view from SAM3D mesh/camera output.
+    Render a calibrated SAM3D mesh view.
 
-    Uses the recovered SAM3D camera translation and focal length as the base
-    view, then applies an orbit and local camera offset on top.
+    The browser viewer is the source of truth for camera extrinsics once it has
+    produced an interactive state. The backend stores that concrete camera pose
+    inside the workflow so reruns, API calls, and restarts can reproduce it.
     """
 
     @classmethod
@@ -506,67 +505,11 @@ class SAM3DBodyRenderOffsetView:
                     "default": True,
                     "tooltip": "Show the camera HUD overlay in the interactive viewer."
                 }),
-                "pivot_mode": (["mesh_center", "mesh_bottom", "root_joint", "origin"], {
-                    "default": "mesh_center",
-                    "tooltip": "Point to orbit the camera around"
-                }),
-                "orbit_x": ("FLOAT", {
-                    "default": 0.0,
-                    "min": -180.0,
-                    "max": 180.0,
-                    "step": 0.5,
-                }),
-                "orbit_y": ("FLOAT", {
-                    "default": 0.0,
-                    "min": -180.0,
-                    "max": 180.0,
-                    "step": 0.5,
-                }),
-                "orbit_z": ("FLOAT", {
-                    "default": 0.0,
-                    "min": -180.0,
-                    "max": 180.0,
-                    "step": 0.5,
-                    "tooltip": "Camera roll after orbit"
-                }),
-                "offset_x": ("FLOAT", {
-                    "default": 0.0,
-                    "min": -5.0,
-                    "max": 5.0,
-                    "step": 0.01,
-                    "tooltip": "Camera-local X translation after orbit"
-                }),
-                "offset_y": ("FLOAT", {
-                    "default": 0.0,
-                    "min": -5.0,
-                    "max": 5.0,
-                    "step": 0.01,
-                    "tooltip": "Camera-local Y translation after orbit"
-                }),
-                "offset_z": ("FLOAT", {
-                    "default": 0.0,
-                    "min": -5.0,
-                    "max": 5.0,
-                    "step": 0.01,
-                    "tooltip": "Camera-local Z translation after orbit"
-                }),
                 "focal_scale": ("FLOAT", {
                     "default": 1.0,
                     "min": 0.1,
                     "max": 4.0,
                     "step": 0.01,
-                }),
-                "principal_offset_x": ("FLOAT", {
-                    "default": 0.0,
-                    "min": -2048.0,
-                    "max": 2048.0,
-                    "step": 1.0,
-                }),
-                "principal_offset_y": ("FLOAT", {
-                    "default": 0.0,
-                    "min": -2048.0,
-                    "max": 2048.0,
-                    "step": 1.0,
                 }),
                 "lighting_preset": (["studio", "flat", "dramatic"], {
                     "default": "studio",
@@ -640,16 +583,7 @@ class SAM3DBodyRenderOffsetView:
         enable_viewer=True,
         use_interactive_view=True,
         show_viewer_hud=True,
-        pivot_mode="mesh_center",
-        orbit_x=0.0,
-        orbit_y=0.0,
-        orbit_z=0.0,
-        offset_x=0.0,
-        offset_y=0.0,
-        offset_z=0.0,
         focal_scale=1.0,
-        principal_offset_x=0.0,
-        principal_offset_y=0.0,
         lighting_preset="studio",
         ambient_intensity=0.35,
         key_intensity=14.0,
@@ -678,7 +612,6 @@ class SAM3DBodyRenderOffsetView:
         faces = _to_numpy(mesh_data.get("faces"))
         camera = _to_numpy(mesh_data.get("camera"))
         focal_length = mesh_data.get("focal_length")
-        joints = _to_numpy(mesh_data.get("joint_coords"))
 
         if vertices is None or faces is None:
             raise RuntimeError("Mesh vertices/faces not found in mesh_data")
@@ -698,59 +631,18 @@ class SAM3DBodyRenderOffsetView:
         scale_y = float(render_height) / float(ref_h)
         fx = focal_length * scale_x * focal_scale
         fy = focal_length * scale_y * focal_scale
-        cx = (ref_w * 0.5 * scale_x) + float(principal_offset_x)
-        cy = (ref_h * 0.5 * scale_y) + float(principal_offset_y)
+        cx = ref_w * 0.5 * scale_x
+        cy = ref_h * 0.5 * scale_y
 
         verts_render = _transform_vertices_to_render_space(vertices)
-        if joints is not None:
-            joints = _transform_points_to_render_space(np.asarray(joints, dtype=np.float32))
-
-        base_cam_pos = camera.copy()
+        pivot = verts_render.mean(axis=0).astype(np.float32)
+        base_cam_pos = camera.copy().astype(np.float32)
         base_cam_pos[0] *= -1.0
-
-        if pivot_mode == "mesh_bottom":
-            bounds_min = verts_render.min(axis=0)
-            bounds_max = verts_render.max(axis=0)
-            pivot = np.array([
-                0.5 * (bounds_min[0] + bounds_max[0]),
-                bounds_min[1],
-                0.5 * (bounds_min[2] + bounds_max[2]),
-            ], dtype=np.float32)
-        elif pivot_mode == "root_joint" and joints is not None and len(joints) > 0:
-            pivot = joints[0].astype(np.float32)
-        elif pivot_mode == "origin":
-            pivot = np.zeros(3, dtype=np.float32)
-        else:
-            pivot = verts_render.mean(axis=0).astype(np.float32)
-
         world_up = np.array([0.0, 1.0, 0.0], dtype=np.float32)
-        base_forward = _normalize(pivot - base_cam_pos, fallback=np.array([0.0, 0.0, -1.0], dtype=np.float32))
-        base_right = _normalize(np.cross(base_forward, world_up), fallback=np.array([1.0, 0.0, 0.0], dtype=np.float32))
-        base_up = _normalize(np.cross(base_right, base_forward), fallback=np.array([0.0, 1.0, 0.0], dtype=np.float32))
-
-        pre_orbit_cam_pos = (
-            base_cam_pos
-            + (base_right * float(offset_x))
-            + (base_up * float(offset_y))
-            + (base_forward * float(offset_z))
-        )
-
-        cam_pos, base_yaw, base_pitch, final_yaw, final_pitch = _upright_orbit_position(
-            pre_orbit_cam_pos,
-            pivot,
-            orbit_pitch_deg=orbit_x,
-            orbit_yaw_deg=orbit_y,
-            world_up=world_up,
-        )
-
-        parameter_camera_pose = _camera_pose_look_at(cam_pos, pivot, roll_deg=orbit_z, world_up=world_up)
-        parameter_state = _camera_state_from_parameters(
-            pivot=pivot,
-            cam_pos=cam_pos,
-            yaw_deg=final_yaw,
-            pitch_deg=final_pitch,
-            roll_deg=orbit_z,
-            up=parameter_camera_pose[:3, 1],
+        parameter_state = _camera_state_from_pose(
+            position=base_cam_pos,
+            target=pivot,
+            up=world_up,
         )
         parsed_interactive_state = _parse_interactive_state(interactive_state)
         use_interactive_state = bool(use_interactive_view) and _state_has_interactive_camera(parsed_interactive_state)
@@ -759,10 +651,7 @@ class SAM3DBodyRenderOffsetView:
             if use_interactive_state
             else parameter_state
         )
-        if use_interactive_state:
-            cam_pos, pivot, camera_pose = _state_to_camera_pose(active_state)
-        else:
-            camera_pose = parameter_camera_pose
+        cam_pos, pivot, camera_pose = _state_to_camera_pose(active_state)
 
         if bg_preset == "black":
             bg_r, bg_g, bg_b = 0, 0, 0
@@ -852,14 +741,9 @@ class SAM3DBodyRenderOffsetView:
             "enable_viewer": bool(enable_viewer),
             "use_interactive_view": bool(use_interactive_view),
             "show_viewer_hud": bool(show_viewer_hud),
-            "pivot_mode": pivot_mode,
             "pivot": [float(x) for x in pivot],
             "camera_position": [float(x) for x in cam_pos],
             "camera_target": [float(x) for x in pivot],
-            "base_orbit_yaw": float(base_yaw),
-            "base_orbit_pitch": float(base_pitch),
-            "final_orbit_yaw": float(final_yaw),
-            "final_orbit_pitch": float(final_pitch),
             "focal_x": float(fx),
             "focal_y": float(fy),
             "principal_x": float(cx),
@@ -871,12 +755,6 @@ class SAM3DBodyRenderOffsetView:
             "key_pitch": float(key_pitch),
             "fill_intensity": float(fill_intensity),
             "rim_intensity": float(rim_intensity),
-            "orbit_x": float(orbit_x),
-            "orbit_y": float(orbit_y),
-            "orbit_z": float(orbit_z),
-            "offset_x": float(offset_x),
-            "offset_y": float(offset_y),
-            "offset_z": float(offset_z),
             "bg_preset": bg_preset,
             "bg_color": [int(bg_r), int(bg_g), int(bg_b)],
         }
