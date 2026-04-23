@@ -322,6 +322,20 @@ def _camera_state_from_parameters(pivot, cam_pos, yaw_deg, pitch_deg, roll_deg, 
     )
 
 
+def _camera_state_to_jsonable(state):
+    out = {}
+    for key, value in state.items():
+        if isinstance(value, np.ndarray):
+            out[key] = [float(x) for x in value.tolist()]
+        elif isinstance(value, (list, tuple)):
+            out[key] = [float(x) if isinstance(x, (np.floating, np.integer, float, int)) else x for x in value]
+        elif isinstance(value, (np.floating, np.integer)):
+            out[key] = float(value)
+        else:
+            out[key] = value
+    return out
+
+
 def _sample_preview_points(vertices, max_points=6000):
     vertices = np.asarray(vertices, dtype=np.float32)
     if len(vertices) <= max_points:
@@ -848,8 +862,8 @@ class SAM3DBodyRenderOffsetView:
                 "vertices": verts_render.tolist(),
                 "faces": faces.tolist(),
             })],
-            "parameter_camera_state": [json.dumps(parameter_state)],
-            "active_camera_state": [json.dumps(active_state)],
+            "parameter_camera_state": [json.dumps(_camera_state_to_jsonable(parameter_state))],
+            "active_camera_state": [json.dumps(_camera_state_to_jsonable(active_state))],
             "render_size": [json.dumps({
                 "width": int(render_width),
                 "height": int(render_height),
