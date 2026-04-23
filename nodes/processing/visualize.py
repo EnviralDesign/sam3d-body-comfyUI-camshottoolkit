@@ -8,6 +8,7 @@ Provides nodes for rendering and visualizing 3D mesh reconstructions.
 
 import os
 import sys
+import json
 import numpy as np
 import cv2
 import torch
@@ -175,6 +176,85 @@ def _resolve_lighting(preset, ambient, key, fill, rim):
     return ambient, key, fill, rim
 
 
+def _parse_interactive_state(state_text):
+    default = {
+        "pivot_x": 0.0,
+        "pivot_y": 0.0,
+        "pivot_z": 0.0,
+        "yaw_deg": 0.0,
+        "pitch_deg": 0.0,
+        "roll_deg": 0.0,
+        "distance": 0.0,
+    }
+    if not state_text:
+        return default
+    try:
+        data = json.loads(state_text)
+        if not isinstance(data, dict):
+            return default
+        for key in default:
+            if key in data:
+                default[key] = float(data[key])
+        return default
+    except Exception:
+        return default
+
+
+def _state_has_interactive_camera(state):
+    return abs(float(state.get("distance", 0.0))) > 1e-5
+
+
+def _camera_axes(yaw_deg, pitch_deg, roll_deg):
+    rot = _apply_roll_to_basis(_orbit_basis_from_yp(yaw_deg, pitch_deg), roll_deg)
+    right = rot @ np.array([1.0, 0.0, 0.0], dtype=np.float32)
+    down = rot @ np.array([0.0, 1.0, 0.0], dtype=np.float32)
+    forward = rot @ np.array([0.0, 0.0, 1.0], dtype=np.float32)
+    return right.astype(np.float32), down.astype(np.float32), forward.astype(np.float32)
+
+
+def _state_to_camera_pose(state):
+    pivot = np.array([state["pivot_x"], state["pivot_y"], state["pivot_z"]], dtype=np.float32)
+    orbit_basis = _orbit_basis_from_yp(float(state["yaw_deg"]), float(state["pitch_deg"]))
+    orbit_forward = (orbit_basis @ np.array([0.0, 0.0, 1.0], dtype=np.float32)).astype(np.float32)
+    orbit_forward = _normalize(orbit_forward, fallback=np.array([0.0, 0.0, 1.0], dtype=np.float32))
+    position = (pivot - orbit_forward * float(state["distance"])).astype(np.float32)
+
+    right, down, forward = _camera_axes(
+        float(state["yaw_deg"]),
+        float(state["pitch_deg"]),
+        float(state["roll_deg"]),
+    )
+    up = (-down).astype(np.float32)
+    backward = (-forward).astype(np.float32)
+
+    pose = np.eye(4, dtype=np.float32)
+    pose[:3, 0] = right
+    pose[:3, 1] = up
+    pose[:3, 2] = backward
+    pose[:3, 3] = position
+    return position, pivot, pose
+
+
+def _camera_state_from_parameters(pivot, cam_pos, yaw_deg, pitch_deg, roll_deg):
+    return {
+        "pivot_x": float(pivot[0]),
+        "pivot_y": float(pivot[1]),
+        "pivot_z": float(pivot[2]),
+        "yaw_deg": float(yaw_deg),
+        "pitch_deg": float(pitch_deg),
+        "roll_deg": float(roll_deg),
+        "distance": float(np.linalg.norm(np.asarray(cam_pos, dtype=np.float32) - np.asarray(pivot, dtype=np.float32))),
+    }
+
+
+def _sample_preview_points(vertices, max_points=6000):
+    vertices = np.asarray(vertices, dtype=np.float32)
+    if len(vertices) <= max_points:
+        return vertices
+    indices = np.linspace(0, len(vertices) - 1, num=max_points, dtype=np.int32)
+    return vertices[indices]
+
+
 class SAM3DBodyVisualize:
     """
     Visualizes SAM 3D Body mesh reconstruction results.
@@ -302,6 +382,18 @@ class SAM3DBodyRenderOffsetView:
                     "max": 4096,
                     "step": 8,
                 }),
+                "enable_viewer": ("BOOLEAN", {
+                    "default": True,
+                    "tooltip": "Mount the interactive preview viewer for this node."
+                }),
+                "use_interactive_view": ("BOOLEAN", {
+                    "default": True,
+                    "tooltip": "If enabled, the browser viewer camera overrides the parameter-based camera when available."
+                }),
+                "show_viewer_hud": ("BOOLEAN", {
+                    "default": True,
+                    "tooltip": "Show the camera HUD overlay in the interactive viewer."
+                }),
                 "pivot_mode": (["mesh_center", "mesh_bottom", "root_joint", "origin"], {
                     "default": "mesh_center",
                     "tooltip": "Point to orbit the camera around"
@@ -414,6 +506,11 @@ class SAM3DBodyRenderOffsetView:
                 "bg_r": ("INT", {"default": 38, "min": 0, "max": 255, "step": 1}),
                 "bg_g": ("INT", {"default": 38, "min": 0, "max": 255, "step": 1}),
                 "bg_b": ("INT", {"default": 38, "min": 0, "max": 255, "step": 1}),
+                "interactive_state": ("STRING", {
+                    "default": "{\"pivot_x\":0,\"pivot_y\":0,\"pivot_z\":0,\"yaw_deg\":0,\"pitch_deg\":0,\"roll_deg\":0,\"distance\":0}",
+                    "multiline": False,
+                    "tooltip": "Hidden interactive camera state managed by the viewer."
+                }),
             },
         }
 
@@ -428,6 +525,9 @@ class SAM3DBodyRenderOffsetView:
         reference_image,
         render_width=512,
         render_height=512,
+        enable_viewer=True,
+        use_interactive_view=True,
+        show_viewer_hud=True,
         pivot_mode="mesh_center",
         orbit_x=0.0,
         orbit_y=0.0,
@@ -452,6 +552,7 @@ class SAM3DBodyRenderOffsetView:
         bg_r=38,
         bg_g=38,
         bg_b=38,
+        interactive_state="",
     ):
         ensure_runtime_dependencies("Cam Shot Toolkit: Render Offset View")
         _prepare_pyrender_backend()
@@ -530,7 +631,20 @@ class SAM3DBodyRenderOffsetView:
             world_up=world_up,
         )
 
-        camera_pose = _camera_pose_look_at(cam_pos, pivot, roll_deg=orbit_z, world_up=world_up)
+        parameter_state = _camera_state_from_parameters(
+            pivot=pivot,
+            cam_pos=cam_pos,
+            yaw_deg=final_yaw,
+            pitch_deg=final_pitch,
+            roll_deg=orbit_z,
+        )
+        parsed_interactive_state = _parse_interactive_state(interactive_state)
+        active_state = (
+            parsed_interactive_state
+            if use_interactive_view and _state_has_interactive_camera(parsed_interactive_state)
+            else parameter_state
+        )
+        cam_pos, pivot, camera_pose = _state_to_camera_pose(active_state)
 
         if bg_preset == "black":
             bg_r, bg_g, bg_b = 0, 0, 0
@@ -614,9 +728,14 @@ class SAM3DBodyRenderOffsetView:
         rendered_bgr = rendered_rgb[:, :, ::-1].copy()
         result = numpy_to_comfy_image(rendered_bgr)
 
+        preview_points = _sample_preview_points(verts_render, max_points=6000)
+
         camera_info = {
             "render_width": int(render_width),
             "render_height": int(render_height),
+            "enable_viewer": bool(enable_viewer),
+            "use_interactive_view": bool(use_interactive_view),
+            "show_viewer_hud": bool(show_viewer_hud),
             "pivot_mode": pivot_mode,
             "pivot": [float(x) for x in pivot],
             "camera_position": [float(x) for x in cam_pos],
@@ -645,8 +764,22 @@ class SAM3DBodyRenderOffsetView:
             "bg_preset": bg_preset,
             "bg_color": [int(bg_r), int(bg_g), int(bg_b)],
         }
+        ui_data = {
+            "preview_points": [json.dumps(preview_points.tolist())],
+            "parameter_camera_state": [json.dumps(parameter_state)],
+            "active_camera_state": [json.dumps(active_state)],
+            "render_size": [json.dumps({
+                "width": int(render_width),
+                "height": int(render_height),
+                "fx": float(fx),
+                "fy": float(fy),
+                "cx": float(cx),
+                "cy": float(cy),
+            })],
+            "bg_color": [json.dumps([int(bg_r), int(bg_g), int(bg_b)])],
+        }
 
-        return (result, str(camera_info))
+        return {"ui": ui_data, "result": (result, json.dumps(camera_info))}
 
 
 class SAM3DBodyExportMesh:

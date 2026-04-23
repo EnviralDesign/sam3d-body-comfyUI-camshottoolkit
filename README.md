@@ -40,6 +40,7 @@ comfy node publish
 - SAM3D model loader with Hugging Face auto-download
 - single-image SAM3D processing node
 - calibrated offset renderer with pivot, background, and lighting controls
+- interactive browser viewer for scouting the render camera with orbit, pan, roll, and dolly controls
 
 ## Node Categories
 
