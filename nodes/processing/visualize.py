@@ -64,6 +64,32 @@ def _rotation_matrix_xyz(rx_deg, ry_deg, rz_deg):
     return rz_mat @ ry_mat @ rx_mat
 
 
+def _orbit_basis_from_yp(yaw_deg, pitch_deg):
+    return _rotation_matrix_xyz(pitch_deg, yaw_deg, 0.0)
+
+
+def _apply_roll_to_basis(basis, roll_deg):
+    roll = np.radians(roll_deg)
+    c = np.cos(roll)
+    s = np.sin(roll)
+
+    ref_right = (basis @ np.array([1.0, 0.0, 0.0], dtype=np.float32)).astype(np.float32)
+    ref_down = (basis @ np.array([0.0, 1.0, 0.0], dtype=np.float32)).astype(np.float32)
+    forward = (basis @ np.array([0.0, 0.0, 1.0], dtype=np.float32)).astype(np.float32)
+
+    right = (ref_right * c) + (ref_down * s)
+    down = (ref_down * c) - (ref_right * s)
+
+    return np.array(
+        [
+            [right[0], down[0], forward[0]],
+            [right[1], down[1], forward[1]],
+            [right[2], down[2], forward[2]],
+        ],
+        dtype=np.float32,
+    )
+
+
 def _camera_pose_look_at(position, target, roll_deg=0.0, world_up=None):
     if world_up is None:
         world_up = np.array([0.0, 1.0, 0.0], dtype=np.float32)
@@ -166,6 +192,44 @@ def _upright_orbit_position(base_position, pivot, orbit_pitch_deg, orbit_yaw_deg
     final_yaw = base_yaw + float(orbit_yaw_deg)
 
     return pivot + _spherical_offset(final_yaw, final_pitch, radius), base_yaw, base_pitch, final_yaw, final_pitch
+
+
+def _orbit_basis_from_yp(yaw_deg, pitch_deg, world_up=None):
+    if world_up is None:
+        world_up = np.array([0.0, 1.0, 0.0], dtype=np.float32)
+
+    forward = _normalize(-_spherical_offset(yaw_deg, pitch_deg, 1.0), fallback=np.array([0.0, 0.0, -1.0], dtype=np.float32))
+    right = np.cross(forward, world_up)
+    if np.linalg.norm(right) < 1e-6:
+        right = np.cross(forward, np.array([0.0, 0.0, 1.0], dtype=np.float32))
+    right = _normalize(right, fallback=np.array([1.0, 0.0, 0.0], dtype=np.float32))
+    down = _normalize(np.cross(right, forward), fallback=np.array([0.0, 1.0, 0.0], dtype=np.float32))
+
+    basis = np.eye(3, dtype=np.float32)
+    basis[:, 0] = right
+    basis[:, 1] = down
+    basis[:, 2] = forward
+    return basis
+
+
+def _apply_roll_to_basis(basis, roll_deg):
+    basis = np.asarray(basis, dtype=np.float32)
+    if abs(float(roll_deg)) < 1e-6:
+        return basis
+
+    roll = np.radians(roll_deg)
+    c = np.cos(roll)
+    s = np.sin(roll)
+
+    right = basis[:, 0]
+    down = basis[:, 1]
+    forward = basis[:, 2]
+
+    rolled = np.eye(3, dtype=np.float32)
+    rolled[:, 0] = right * c - down * s
+    rolled[:, 1] = right * s + down * c
+    rolled[:, 2] = forward
+    return rolled
 
 
 def _resolve_lighting(preset, ambient, key, fill, rim):
