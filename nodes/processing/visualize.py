@@ -344,16 +344,18 @@ def _camera_state_from_parameters(pivot, cam_pos, yaw_deg, pitch_deg, roll_deg, 
 
 
 def _camera_state_to_jsonable(state):
+    def convert(value):
+        if isinstance(value, np.ndarray):
+            return convert(value.tolist())
+        if isinstance(value, (list, tuple)):
+            return [convert(x) for x in value]
+        if isinstance(value, (np.floating, np.integer)):
+            return float(value)
+        return value
+
     out = {}
     for key, value in state.items():
-        if isinstance(value, np.ndarray):
-            out[key] = [float(x) for x in value.tolist()]
-        elif isinstance(value, (list, tuple)):
-            out[key] = [float(x) if isinstance(x, (np.floating, np.integer, float, int)) else x for x in value]
-        elif isinstance(value, (np.floating, np.integer)):
-            out[key] = float(value)
-        else:
-            out[key] = value
+        out[key] = convert(value)
     return out
 
 
