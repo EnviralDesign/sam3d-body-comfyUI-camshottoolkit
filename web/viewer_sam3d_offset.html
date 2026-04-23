@@ -52,6 +52,26 @@
             pointer-events: none;
             z-index: 5;
         }
+        #toolbar {
+            position: absolute;
+            top: 8px;
+            right: 8px;
+            display: flex;
+            gap: 8px;
+            z-index: 6;
+        }
+        #toolbar button {
+            padding: 6px 10px;
+            border-radius: 6px;
+            border: 1px solid rgba(255, 255, 255, 0.14);
+            background: rgba(0, 0, 0, 0.55);
+            color: #eee;
+            font-size: 11px;
+            cursor: pointer;
+        }
+        #toolbar button:hover {
+            background: rgba(255, 255, 255, 0.08);
+        }
         #error {
             position: absolute;
             inset: 0;
@@ -72,6 +92,9 @@
             <div id="stage">
                 <canvas id="canvas"></canvas>
                 <div id="hud">Waiting for node execution.</div>
+                <div id="toolbar">
+                    <button id="resetViewButton" type="button">Reset View</button>
+                </div>
                 <div id="error"></div>
             </div>
         </div>
@@ -86,6 +109,7 @@
         const canvas = document.getElementById("canvas");
         const hud = document.getElementById("hud");
         const errorEl = document.getElementById("error");
+        const resetViewButton = document.getElementById("resetViewButton");
 
         let renderer = null;
         let scene = null;
@@ -102,6 +126,7 @@
         let lastMeshSignature = "";
         let lastAppliedCameraSignature = "";
         let lastSentInteractiveState = "";
+        let lastParameterCameraState = null;
         let frameRequested = false;
 
         function parseJson(value, fallback) {
@@ -246,11 +271,15 @@
             if (!camera || !controls) {
                 return null;
             }
+            camera.updateMatrixWorld(true);
             const target = controls.target.clone();
+            const e = camera.matrixWorld.elements;
             return {
                 camera_position: [camera.position.x, camera.position.y, camera.position.z],
                 camera_target: [target.x, target.y, target.z],
-                camera_up: [camera.up.x, camera.up.y, camera.up.z],
+                camera_up: [e[4], e[5], e[6]],
+                camera_right: [e[0], e[1], e[2]],
+                camera_backward: [e[8], e[9], e[10]],
                 pivot_x: target.x,
                 pivot_y: target.y,
                 pivot_z: target.z,
@@ -282,6 +311,20 @@
                             Number(parsed.camera_up[2]) || 0,
                         ]
                         : [0, 1, 0],
+                    camera_right: Array.isArray(parsed.camera_right) && parsed.camera_right.length === 3
+                        ? [
+                            Number(parsed.camera_right[0]) || 1,
+                            Number(parsed.camera_right[1]) || 0,
+                            Number(parsed.camera_right[2]) || 0,
+                        ]
+                        : null,
+                    camera_backward: Array.isArray(parsed.camera_backward) && parsed.camera_backward.length === 3
+                        ? [
+                            Number(parsed.camera_backward[0]) || 0,
+                            Number(parsed.camera_backward[1]) || 0,
+                            Number(parsed.camera_backward[2]) || 1,
+                        ]
+                        : null,
                     pivot_x: Number(parsed.pivot_x) || 0,
                     pivot_y: Number(parsed.pivot_y) || 0,
                     pivot_z: Number(parsed.pivot_z) || 0,
@@ -298,12 +341,20 @@
             const position = vec3From(state.camera_position, [0, 0, 2]);
             const target = vec3From(state.camera_target, [0, 0, 0]);
             const up = vec3From(state.camera_up, [0, 1, 0]);
+            const right = vec3From(state.camera_right, [1, 0, 0]);
+            const backward = vec3From(state.camera_backward, [0, 0, 1]);
 
             controls.enabled = false;
             camera.position.copy(position);
-            camera.up.copy(up);
             controls.target.copy(target);
-            camera.lookAt(target);
+            if (state.camera_right && state.camera_up && state.camera_backward) {
+                const basis = new THREE.Matrix4().makeBasis(right.normalize(), up.normalize(), backward.normalize());
+                camera.quaternion.setFromRotationMatrix(basis);
+                camera.up.copy(up.normalize());
+            } else {
+                camera.up.copy(up);
+                camera.lookAt(target);
+            }
             camera.updateMatrixWorld(true);
             controls.update();
             controls.enabled = true;
@@ -408,6 +459,16 @@
             `;
         }
 
+        function resetToParameterView() {
+            if (!lastParameterCameraState) {
+                return;
+            }
+            lastAppliedCameraSignature = JSON.stringify(lastParameterCameraState);
+            applyCameraState(lastParameterCameraState);
+            emitInteractiveState();
+            requestRender();
+        }
+
         function requestRender() {
             if (frameRequested) {
                 return;
@@ -458,6 +519,7 @@
             uiPayload = data.ui || {};
             nodeState = data.state || {};
             nodeState.nodeId = Number(nodeState.nodeId || 0);
+            lastParameterCameraState = parseCameraState(uiPayload?.parameter_camera_state?.[0] || "", null);
 
             const signature = JSON.stringify({
                 mesh: uiPayload.preview_mesh?.[0] || "",
@@ -497,6 +559,10 @@
                 return;
             }
             handleStateMessage(data);
+        });
+
+        resetViewButton?.addEventListener("click", () => {
+            resetToParameterView();
         });
     </script>
 </body>

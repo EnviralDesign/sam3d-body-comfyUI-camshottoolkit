@@ -223,6 +223,8 @@ def _parse_interactive_state(state_text):
         "camera_position": None,
         "camera_target": None,
         "camera_up": None,
+        "camera_right": None,
+        "camera_backward": None,
     }
     if not state_text:
         return default
@@ -231,9 +233,9 @@ def _parse_interactive_state(state_text):
         if not isinstance(data, dict):
             return default
         for key in default:
-            if key in data and key not in ("camera_position", "camera_target", "camera_up"):
+            if key in data and key not in ("camera_position", "camera_target", "camera_up", "camera_right", "camera_backward"):
                 default[key] = float(data[key])
-        for key in ("camera_position", "camera_target", "camera_up"):
+        for key in ("camera_position", "camera_target", "camera_up", "camera_right", "camera_backward"):
             parsed = _to_float_vec3(data.get(key))
             if parsed is not None:
                 default[key] = parsed
@@ -266,9 +268,18 @@ def _state_to_camera_pose(state):
         position = _to_float_vec3(state.get("camera_position"))
         target = _to_float_vec3(state.get("camera_target"))
         up = _to_float_vec3(state.get("camera_up"))
-        if up is None:
-            up = np.array([0.0, 1.0, 0.0], dtype=np.float32)
-        pose = _camera_pose_look_at(position, target, world_up=up)
+        right = _to_float_vec3(state.get("camera_right"))
+        backward = _to_float_vec3(state.get("camera_backward"))
+        if right is not None and up is not None and backward is not None:
+            pose = np.eye(4, dtype=np.float32)
+            pose[:3, 0] = _normalize(right, fallback=np.array([1.0, 0.0, 0.0], dtype=np.float32))
+            pose[:3, 1] = _normalize(up, fallback=np.array([0.0, 1.0, 0.0], dtype=np.float32))
+            pose[:3, 2] = _normalize(backward, fallback=np.array([0.0, 0.0, 1.0], dtype=np.float32))
+            pose[:3, 3] = position.astype(np.float32)
+        else:
+            if up is None:
+                up = np.array([0.0, 1.0, 0.0], dtype=np.float32)
+            pose = _camera_pose_look_at(position, target, world_up=up)
         return position.astype(np.float32), target.astype(np.float32), pose
 
     pivot = np.array([state["pivot_x"], state["pivot_y"], state["pivot_z"]], dtype=np.float32)
@@ -281,14 +292,26 @@ def _state_to_camera_pose(state):
 
 
 def _camera_state_from_pose(position, target, up=None, legacy=None):
+    position = np.asarray(position, dtype=np.float32)
+    target = np.asarray(target, dtype=np.float32)
+    up = np.asarray(up if up is not None else [0.0, 1.0, 0.0], dtype=np.float32)
+    backward = _normalize(position - target, fallback=np.array([0.0, 0.0, 1.0], dtype=np.float32))
+    right = np.cross(up, backward)
+    if np.linalg.norm(right) < 1e-6:
+        right = np.cross(np.array([0.0, 0.0, 1.0], dtype=np.float32), backward)
+    right = _normalize(right, fallback=np.array([1.0, 0.0, 0.0], dtype=np.float32))
+    true_up = _normalize(np.cross(backward, right), fallback=np.array([0.0, 1.0, 0.0], dtype=np.float32))
+
     state = {
         "camera_position": [float(position[0]), float(position[1]), float(position[2])],
         "camera_target": [float(target[0]), float(target[1]), float(target[2])],
         "camera_up": [
-            float(up[0]) if up is not None else 0.0,
-            float(up[1]) if up is not None else 1.0,
-            float(up[2]) if up is not None else 0.0,
+            float(true_up[0]),
+            float(true_up[1]),
+            float(true_up[2]),
         ],
+        "camera_right": [float(right[0]), float(right[1]), float(right[2])],
+        "camera_backward": [float(backward[0]), float(backward[1]), float(backward[2])],
         "pivot_x": float(target[0]),
         "pivot_y": float(target[1]),
         "pivot_z": float(target[2]),
