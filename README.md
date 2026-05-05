@@ -41,6 +41,7 @@ comfy node publish
 - single-image SAM3D processing node
 - calibrated offset renderer with pivot, background, and lighting controls
 - interactive browser viewer for scouting the render camera with orbit, pan, roll, and dolly controls
+- optional render `auto` mode that ignores saved viewer camera state and realigns from each SAM3D input for API workflows
 
 ## Node Categories
 

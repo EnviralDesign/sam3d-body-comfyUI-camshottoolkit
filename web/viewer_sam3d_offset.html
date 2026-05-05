@@ -72,6 +72,10 @@
         #toolbar button:hover {
             background: rgba(255, 255, 255, 0.08);
         }
+        #toolbar button:disabled {
+            opacity: 0.45;
+            cursor: default;
+        }
         #error {
             position: absolute;
             inset: 0;
@@ -474,11 +478,14 @@
             }
             hud.style.display = "block";
             const state = stateFromCamera();
+            const cameraMode = nodeState?.auto
+                ? "auto view active"
+                : (nodeState?.use_interactive_view ? "interactive view active" : "parameter view active");
             hud.innerHTML = `
                 <div>cam ${state.camera_position.map((v) => v.toFixed(3)).join(", ")}</div>
                 <div>target ${state.camera_target.map((v) => v.toFixed(3)).join(", ")}</div>
                 <div>up ${state.camera_up.map((v) => v.toFixed(3)).join(", ")}</div>
-                <div style="opacity:.75">${nodeState?.use_interactive_view ? "interactive view active" : "parameter view active"}</div>
+                <div style="opacity:.75">${cameraMode}</div>
                 <div style="opacity:.75">Arcball: drag to tumble, wheel to dolly, right-drag to pan</div>
             `;
         }
@@ -511,6 +518,9 @@
         }
 
         function emitInteractiveState() {
+            if (nodeState?.auto) {
+                return;
+            }
             const state = stateFromCamera();
             if (!state) {
                 return;
@@ -529,6 +539,9 @@
 
         function chooseCameraState() {
             const fallback = parseCameraState(uiPayload?.parameter_camera_state?.[0] || "", null);
+            if (nodeState?.auto) {
+                return fallback;
+            }
             if (nodeState?.use_interactive_view) {
                 const interactive = parseCameraState(nodeState?.interactive_state || "", null);
                 if (interactive) {
@@ -544,6 +557,9 @@
             nodeState = data.state || {};
             nodeState.nodeId = Number(nodeState.nodeId || 0);
             lastParameterCameraState = parseCameraState(uiPayload?.parameter_camera_state?.[0] || "", null);
+            if (resetViewButton) {
+                resetViewButton.disabled = !!nodeState.auto;
+            }
 
             const signature = JSON.stringify({
                 mesh: uiPayload.preview_mesh?.[0] || "",
@@ -568,6 +584,9 @@
                 if (cameraState && cameraSig !== lastAppliedCameraSignature) {
                     lastAppliedCameraSignature = cameraSig;
                     applyCameraState(cameraState);
+                }
+                if (controls) {
+                    controls.enabled = !nodeState.auto;
                 }
                 applyVisualSettings();
                 requestRender();

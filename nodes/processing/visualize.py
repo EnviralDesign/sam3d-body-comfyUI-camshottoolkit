@@ -503,6 +503,10 @@ class SAM3DBodyRenderOffsetView:
                     "default": True,
                     "tooltip": "If enabled, the browser viewer camera overrides the parameter-based camera when available."
                 }),
+                "auto": ("BOOLEAN", {
+                    "default": False,
+                    "tooltip": "Ignore saved viewer camera state and align from the current SAM3D input on every run."
+                }),
                 "show_viewer_hud": ("BOOLEAN", {
                     "default": True,
                     "tooltip": "Show the camera HUD overlay in the interactive viewer."
@@ -584,6 +588,7 @@ class SAM3DBodyRenderOffsetView:
         render_height=512,
         enable_viewer=True,
         use_interactive_view=True,
+        auto=False,
         show_viewer_hud=True,
         focal_scale=1.0,
         lighting_preset="studio",
@@ -647,7 +652,11 @@ class SAM3DBodyRenderOffsetView:
             up=world_up,
         )
         parsed_interactive_state = _parse_interactive_state(interactive_state)
-        use_interactive_state = bool(use_interactive_view) and _state_has_interactive_camera(parsed_interactive_state)
+        use_interactive_state = (
+            not bool(auto)
+            and bool(use_interactive_view)
+            and _state_has_interactive_camera(parsed_interactive_state)
+        )
         active_state = (
             parsed_interactive_state
             if use_interactive_state
@@ -754,6 +763,7 @@ class SAM3DBodyRenderOffsetView:
             "render_height": int(render_height),
             "enable_viewer": bool(enable_viewer),
             "use_interactive_view": bool(use_interactive_view),
+            "auto": bool(auto),
             "show_viewer_hud": bool(show_viewer_hud),
             "pivot": [float(x) for x in pivot],
             "camera_position": [float(x) for x in cam_pos],
