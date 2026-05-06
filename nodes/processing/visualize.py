@@ -447,7 +447,7 @@ def _position_mesh_people(meshes):
             mesh["vertices_positioned"] = mesh["vertices"]
             continue
         camera = np.asarray(camera, dtype=np.float32).reshape(1, 3)
-        mesh["vertices_positioned"] = mesh["vertices"] + (primary_camera - camera)
+        mesh["vertices_positioned"] = mesh["vertices"] + (camera - primary_camera)
     return meshes
 
 
