@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "sam3d-camshot-toolkit"
-version = "0.1.5"
+version = "0.1.6"
 description = "Minimal SAM3D body reconstruction toolkit for calibrated camera-shot workflows in ComfyUI."
 license = { file = "LICENSE" }
 readme = "README.md"
@@ -17,6 +17,11 @@ classifiers = [
 
 [tool.setuptools.dynamic]
 dependencies = { file = ["requirements.txt"] }
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["nodes*"]
+namespaces = false
 
 [project.urls]
 Repository = "https://github.com/EnviralDesign/sam3d-body-comfyUI-camshottoolkit"

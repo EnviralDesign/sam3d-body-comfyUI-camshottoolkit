@@ -1,11 +1,32 @@
 from __future__ import annotations
 
 import importlib.util
+import os
 from pathlib import Path
 
 
 REPO_DIR = Path(__file__).resolve().parent
 RUNTIME_DEPS_PATH = REPO_DIR / "nodes" / "runtime_deps.py"
+
+
+def configure_headless_opengl() -> None:
+    """
+    Prefer EGL for pyrender on headless Linux hosts.
+
+    PyOpenGL chooses its platform the first time OpenGL/pyrender is imported, so
+    this has to run during Comfy prestartup. Respect explicit user choices.
+    """
+    if os.environ.get("PYOPENGL_PLATFORM"):
+        return
+    if os.name == "nt":
+        return
+    if os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY"):
+        return
+    os.environ["PYOPENGL_PLATFORM"] = "egl"
+    print("[sam3d-camshottoolkit] Headless display detected; using PYOPENGL_PLATFORM=egl.")
+
+
+configure_headless_opengl()
 
 spec = importlib.util.spec_from_file_location("sam3d_camshottoolkit_runtime_deps", RUNTIME_DEPS_PATH)
 if spec is None or spec.loader is None:

@@ -137,14 +137,27 @@ def _transform_points_to_render_space(points):
 
 def _prepare_pyrender_backend():
     """
-    Ensure pyrender uses a Windows-safe backend.
+    Ensure pyrender uses a platform-appropriate backend.
 
     SAM3DBody's bundled renderer defaults PYOPENGL_PLATFORM=egl, which breaks on
     standard Windows setups that do not ship an EGL loader. On Windows we want
     pyrender to use its default hidden pyglet window backend instead.
+
+    On headless Linux hosts there is no X/Wayland display, so pyglet cannot
+    create even a hidden window. Prefer EGL there unless the user chose a
+    backend explicitly. This duplicates prestartup defensively for nonstandard
+    load paths, but still runs before pyrender is imported in this node.
     """
     if os.name == "nt" and os.environ.get("PYOPENGL_PLATFORM", "").lower() == "egl":
         os.environ.pop("PYOPENGL_PLATFORM", None)
+        return
+    if (
+        os.name != "nt"
+        and not os.environ.get("PYOPENGL_PLATFORM")
+        and not os.environ.get("DISPLAY")
+        and not os.environ.get("WAYLAND_DISPLAY")
+    ):
+        os.environ["PYOPENGL_PLATFORM"] = "egl"
 
 
 def _spherical_offset(yaw_deg, pitch_deg, radius):

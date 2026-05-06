@@ -53,6 +53,8 @@ comfy node publish
 
 - Model weights are downloaded automatically on first use into `ComfyUI/models/sam3dbody`.
 - The render node uses `pyrender` in Python, not a Three.js viewport.
+- On headless Linux GPU hosts, the package defaults PyOpenGL to EGL during
+  Comfy prestartup so offscreen rendering works without an X display.
 - `install.py` is intentionally a no-op for Registry compliance. Dependency installation should be handled by ComfyUI-Manager or an explicit `pip install -r requirements.txt`.
 
 ## Donations & Support
