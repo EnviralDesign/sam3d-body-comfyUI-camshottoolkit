@@ -90,6 +90,7 @@ def _prepare_masks_and_bboxes(mask_np):
 # Module-level cache for loaded model (persists across calls in worker)
 _MODEL_CACHE = {}
 _DETECTOR_CACHE = {}
+_PERSON_DETECTOR_CACHE = {}
 
 
 def _load_sam3d_model(model_config: dict):
@@ -177,6 +178,171 @@ def _detect_people_with_torchvision(img_bgr, bbox_threshold, device):
     print(
         "[SAM3DBody] Torchvision person detector found "
         f"{len(boxes)} person box(es): "
+        + ", ".join(f"{score:.2f}" for score in scores)
+    )
+    return boxes
+
+
+def _pad_boxes(boxes, width, height, scale):
+    boxes = np.asarray(boxes, dtype=np.float32).reshape(-1, 4)
+    scale = max(float(scale), 1.0)
+    if scale <= 1.0001:
+        boxes[:, 0::2] = np.clip(boxes[:, 0::2], 0, width)
+        boxes[:, 1::2] = np.clip(boxes[:, 1::2], 0, height)
+        return boxes.astype(np.float32)
+
+    padded = []
+    for x1, y1, x2, y2 in boxes:
+        cx = (x1 + x2) * 0.5
+        cy = (y1 + y2) * 0.5
+        w = (x2 - x1) * scale
+        h = (y2 - y1) * scale
+        padded.append([
+            max(cx - w * 0.5, 0.0),
+            max(cy - h * 0.5, 0.0),
+            min(cx + w * 0.5, float(width)),
+            min(cy + h * 0.5, float(height)),
+        ])
+    return np.asarray(padded, dtype=np.float32)
+
+
+def _sort_boxes_left_to_right(boxes, scores=None):
+    boxes = np.asarray(boxes, dtype=np.float32).reshape(-1, 4)
+    if len(boxes) == 0:
+        return boxes, scores
+    order = np.lexsort((boxes[:, 1], boxes[:, 0]))
+    boxes = boxes[order]
+    if scores is not None:
+        scores = np.asarray(scores, dtype=np.float32).reshape(-1)[order]
+    return boxes, scores
+
+
+def _load_transformers_sam3_detector(config, device):
+    key = ("transformers_sam3", config.get("model_path"), str(device))
+    if key in _PERSON_DETECTOR_CACHE:
+        return _PERSON_DETECTOR_CACHE[key]
+
+    try:
+        from transformers import Sam3Model, Sam3Processor
+    except Exception as exc:
+        raise RuntimeError(
+            "Transformers SAM3 support is not available in this environment. "
+            "Install/upgrade transformers, or use the torchvision fallback detector."
+        ) from exc
+
+    model_path = config.get("model_path") or config.get("repo_id")
+    if not model_path:
+        raise RuntimeError("SAM3 detector config is missing model_path/repo_id")
+
+    processor = Sam3Processor.from_pretrained(model_path)
+    model = Sam3Model.from_pretrained(model_path).to(device)
+    model.eval()
+    loaded = {"model": model, "processor": processor}
+    _PERSON_DETECTOR_CACHE[key] = loaded
+    return loaded
+
+
+def _load_native_sam3_detector(config, device):
+    key = ("native_sam3", config.get("checkpoint_path"), str(device))
+    if key in _PERSON_DETECTOR_CACHE:
+        return _PERSON_DETECTOR_CACHE[key]
+
+    try:
+        from sam3.model_builder import build_sam3_image_model
+        from sam3.model.sam3_image_processor import Sam3Processor
+    except Exception as exc:
+        raise RuntimeError(
+            "native_sam3 detector was selected, but Meta's sam3 package is not installed. "
+            "Use the default transformers_sam3 detector unless you intentionally installed sam3."
+        ) from exc
+
+    checkpoint_path = config.get("checkpoint_path")
+    if not checkpoint_path:
+        raise RuntimeError("native_sam3 detector config is missing checkpoint_path")
+
+    model = build_sam3_image_model(
+        checkpoint_path=checkpoint_path,
+        load_from_HF=False,
+        device=str(device),
+    )
+    processor = Sam3Processor(model)
+    loaded = {"model": model, "processor": processor}
+    _PERSON_DETECTOR_CACHE[key] = loaded
+    return loaded
+
+
+def _detect_people_with_person_detector(img_bgr, detector_config, bbox_threshold, device):
+    if not detector_config:
+        return None
+
+    implementation = detector_config.get("implementation", "torchvision")
+    height, width = img_bgr.shape[:2]
+
+    if implementation == "torchvision":
+        boxes = _detect_people_with_torchvision(img_bgr, bbox_threshold, device)
+        if boxes is None:
+            return None
+        boxes = _pad_boxes(boxes, width, height, detector_config.get("bbox_padding", 1.0))
+        return boxes
+
+    from PIL import Image
+
+    img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
+    image = Image.fromarray(img_rgb.astype(np.uint8), "RGB")
+    prompt = detector_config.get("prompt") or "person"
+    mask_threshold = float(detector_config.get("mask_threshold", 0.5))
+    padding = float(detector_config.get("bbox_padding", 1.2))
+
+    if implementation == "native_sam3":
+        loaded = _load_native_sam3_detector(detector_config, device)
+        processor = loaded["processor"]
+        with torch.no_grad():
+            inference_state = processor.set_image(image)
+            output = processor.set_text_prompt(state=inference_state, prompt=prompt)
+        scores = output["scores"].detach().cpu().numpy()
+        boxes = output["boxes"].detach().cpu().numpy()
+    elif implementation == "transformers_sam3":
+        loaded = _load_transformers_sam3_detector(detector_config, device)
+        model = loaded["model"]
+        processor = loaded["processor"]
+        inputs = processor(images=image, text=prompt, return_tensors="pt").to(device)
+        with torch.no_grad():
+            outputs = model(**inputs)
+        processed = processor.post_process_instance_segmentation(
+            outputs,
+            threshold=float(bbox_threshold),
+            mask_threshold=mask_threshold,
+            target_sizes=(
+                inputs.get("original_sizes").tolist()
+                if inputs.get("original_sizes") is not None
+                else [[height, width]]
+            ),
+        )[0]
+        boxes = processed.get("boxes")
+        scores = processed.get("scores")
+        if isinstance(boxes, torch.Tensor):
+            boxes = boxes.detach().cpu().numpy()
+        if isinstance(scores, torch.Tensor):
+            scores = scores.detach().cpu().numpy()
+    else:
+        raise RuntimeError(f"Unsupported person detector implementation: {implementation}")
+
+    if boxes is None:
+        return None
+    boxes = np.asarray(boxes, dtype=np.float32).reshape(-1, 4)
+    if scores is None:
+        scores = np.ones((len(boxes),), dtype=np.float32)
+    scores = np.asarray(scores, dtype=np.float32).reshape(-1)
+    keep = scores >= float(bbox_threshold)
+    boxes = boxes[keep]
+    scores = scores[keep]
+    if len(boxes) == 0:
+        return None
+
+    boxes = _pad_boxes(boxes, width, height, padding)
+    boxes, scores = _sort_boxes_left_to_right(boxes, scores)
+    print(
+        f"[SAM3DBody] {implementation} detector found {len(boxes)} person box(es): "
         + ", ".join(f"{score:.2f}" for score in scores)
     )
     return boxes
@@ -329,6 +495,9 @@ class SAM3DBodyProcess:
                 "mask": ("MASK", {
                     "tooltip": "Optional segmentation mask to guide reconstruction"
                 }),
+                "person_detector": ("SAM3D_PERSON_DETECTOR", {
+                    "tooltip": "Optional SAM3 person detector for multi-person images"
+                }),
             }
         }
 
@@ -350,7 +519,7 @@ class SAM3DBodyProcess:
 
         return np.array([[cmin, rmin, cmax, rmax]], dtype=np.float32)
 
-    def process(self, model, image, bbox_threshold=0.8, inference_type="full", person_index=0, mask=None):
+    def process(self, model, image, bbox_threshold=0.8, inference_type="full", person_index=0, mask=None, person_detector=None):
         """Process image and reconstruct 3D human mesh.
 
         Args:
@@ -360,6 +529,7 @@ class SAM3DBodyProcess:
             inference_type: "full", "body", or "hand"
             person_index: -1 for all detected people, otherwise a single 0-based person index
             mask: Optional segmentation mask
+            person_detector: Optional detector config from Load SAM3 Person Detector
         """
         ensure_runtime_dependencies("Cam Shot Toolkit: Process Image")
         from ..sam_3d_body import SAM3DBodyEstimator
@@ -384,10 +554,29 @@ class SAM3DBodyProcess:
         # Convert mask if provided and compute bounding box
         mask_np = None
         bboxes = None
-        if mask is not None:
+        requested_index = _requested_person_index(person_index)
+        if person_detector is not None:
+            try:
+                bboxes = _detect_people_with_person_detector(
+                    img_bgr,
+                    person_detector,
+                    bbox_threshold,
+                    torch.device(loaded["device"]),
+                )
+            except Exception as exc:
+                print(f"[SAM3DBody] [WARNING] Person detector failed: {exc}")
+                bboxes = None
+            if bboxes is None and requested_index != 0:
+                raise RuntimeError(
+                    "Person detector did not return any person boxes. "
+                    "Try lowering bbox_threshold or disconnect the detector to use the full-image fallback."
+                )
+
+        if bboxes is None and mask is not None:
             mask_np = comfy_mask_to_numpy(mask)
             mask_np, bboxes = _prepare_masks_and_bboxes(mask_np)
-        elif _requested_person_index(person_index) != 0:
+
+        if bboxes is None and requested_index != 0:
             try:
                 bboxes = _detect_people_with_torchvision(
                     img_bgr,
@@ -524,6 +713,9 @@ class SAM3DBodyProcessAdvanced:
                 "mask": ("MASK", {
                     "tooltip": "Optional pre-computed segmentation mask"
                 }),
+                "person_detector": ("SAM3D_PERSON_DETECTOR", {
+                    "tooltip": "Optional SAM3 person detector for multi-person images"
+                }),
             }
         }
 
@@ -547,7 +739,7 @@ class SAM3DBodyProcessAdvanced:
 
     def process_advanced(self, model, image, bbox_threshold=0.8, nms_threshold=0.3,
                         inference_type="full", person_index=0, detector_name="none", segmentor_name="none",
-                        fov_name="none", detector_path="", segmentor_path="", fov_path="", mask=None):
+                        fov_name="none", detector_path="", segmentor_path="", fov_path="", mask=None, person_detector=None):
         """Process image with advanced options.
 
         Args:
@@ -564,6 +756,7 @@ class SAM3DBodyProcessAdvanced:
             segmentor_path: Path to segmentor model
             fov_path: Path to FOV model
             mask: Optional pre-computed segmentation mask
+            person_detector: Optional detector config from Load SAM3 Person Detector
         """
         from ..sam_3d_body import SAM3DBodyEstimator
 
@@ -612,10 +805,29 @@ class SAM3DBodyProcessAdvanced:
         img_bgr = comfy_image_to_numpy(image)
         mask_np = None
         bboxes = None
-        if mask is not None:
+        requested_index = _requested_person_index(person_index)
+        if person_detector is not None:
+            try:
+                bboxes = _detect_people_with_person_detector(
+                    img_bgr,
+                    person_detector,
+                    bbox_threshold,
+                    device,
+                )
+            except Exception as exc:
+                print(f"[SAM3DBody] [WARNING] Person detector failed: {exc}")
+                bboxes = None
+            if bboxes is None and requested_index != 0:
+                raise RuntimeError(
+                    "Person detector did not return any person boxes. "
+                    "Try lowering bbox_threshold or disconnect the detector to use the full-image fallback."
+                )
+
+        if bboxes is None and mask is not None:
             mask_np = comfy_mask_to_numpy(mask)
             mask_np, bboxes = _prepare_masks_and_bboxes(mask_np)
-        elif _requested_person_index(person_index) != 0:
+
+        if bboxes is None and requested_index != 0:
             try:
                 bboxes = _detect_people_with_torchvision(
                     img_bgr,

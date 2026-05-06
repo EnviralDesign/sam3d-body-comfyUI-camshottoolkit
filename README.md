@@ -3,6 +3,7 @@
 Minimal ComfyUI custom node package for:
 
 - `Cam Shot Toolkit: Load SAM3D Model`
+- `Cam Shot Toolkit: Load SAM3 Person Detector`
 - `Cam Shot Toolkit: Process Image`
 - `Cam Shot Toolkit: Render Offset View`
 
@@ -38,6 +39,8 @@ comfy node publish
 ## Included
 
 - SAM3D model loader with Hugging Face auto-download
+- SAM3 person detector loader with official gated repo support and ungated
+  mirror fallback for prompt-based multi-person detection
 - single-image SAM3D processing node
 - person selection for SAM3D outputs: `person_index=-1` uses all detected people,
   while `0..N` selects a specific detected person. When no mask is connected,
@@ -56,6 +59,9 @@ comfy node publish
 ## Notes
 
 - Model weights are downloaded automatically on first use into `ComfyUI/models/sam3dbody`.
+- SAM3 detector weights are downloaded into `ComfyUI/models/sam3_person_detector`.
+  The detector loader tries `facebook/sam3` first in `auto` mode and falls back
+  to an ungated mirror such as `jetjodh/sam3` if official access is gated.
 - The render node uses `pyrender` in Python, not a Three.js viewport.
 - On headless Linux GPU hosts, the package defaults PyOpenGL to EGL during
   Comfy prestartup so offscreen rendering works without an X display.
