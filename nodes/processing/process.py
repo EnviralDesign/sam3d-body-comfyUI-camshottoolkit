@@ -89,6 +89,7 @@ def _prepare_masks_and_bboxes(mask_np):
 
 # Module-level cache for loaded model (persists across calls in worker)
 _MODEL_CACHE = {}
+_DETECTOR_CACHE = {}
 
 
 def _load_sam3d_model(model_config: dict):
@@ -132,6 +133,53 @@ def _load_sam3d_model(model_config: dict):
     _MODEL_CACHE[cache_key] = result
 
     return result
+
+
+def _load_torchvision_person_detector(device):
+    cache_key = str(device)
+    if cache_key in _DETECTOR_CACHE:
+        return _DETECTOR_CACHE[cache_key]
+
+    from torchvision.models.detection import (
+        FasterRCNN_MobileNet_V3_Large_320_FPN_Weights,
+        fasterrcnn_mobilenet_v3_large_320_fpn,
+    )
+
+    weights = FasterRCNN_MobileNet_V3_Large_320_FPN_Weights.DEFAULT
+    detector = fasterrcnn_mobilenet_v3_large_320_fpn(weights=weights)
+    detector.eval().to(device)
+    _DETECTOR_CACHE[cache_key] = detector
+    return detector
+
+
+def _detect_people_with_torchvision(img_bgr, bbox_threshold, device):
+    detector = _load_torchvision_person_detector(device)
+    img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
+    image_tensor = torch.from_numpy(img_rgb).permute(2, 0, 1).float() / 255.0
+    image_tensor = image_tensor.to(device)
+
+    with torch.no_grad():
+        result = detector([image_tensor])[0]
+
+    labels = result["labels"].detach().cpu().numpy()
+    scores = result["scores"].detach().cpu().numpy()
+    boxes = result["boxes"].detach().cpu().numpy()
+    keep = (labels == 1) & (scores >= float(bbox_threshold))
+    boxes = boxes[keep]
+    scores = scores[keep]
+
+    if len(boxes) == 0:
+        return None
+
+    order = np.argsort(boxes[:, 0])
+    boxes = boxes[order].astype(np.float32)
+    scores = scores[order].astype(np.float32)
+    print(
+        "[SAM3DBody] Torchvision person detector found "
+        f"{len(boxes)} person box(es): "
+        + ", ".join(f"{score:.2f}" for score in scores)
+    )
+    return boxes
 
 
 def _coerce_person_selection(person_index, people_count):
@@ -233,6 +281,13 @@ def _build_mesh_and_skeleton(outputs, faces, loaded, sam_3d_model, person_index)
     _add_joint_parent_hierarchy(skeleton, sam_3d_model)
     return primary, skeleton
 
+
+def _requested_person_index(person_index):
+    try:
+        return int(person_index)
+    except Exception:
+        return 0
+
 class SAM3DBodyProcess:
     """
     Performs 3D human mesh reconstruction from a single image.
@@ -332,6 +387,16 @@ class SAM3DBodyProcess:
         if mask is not None:
             mask_np = comfy_mask_to_numpy(mask)
             mask_np, bboxes = _prepare_masks_and_bboxes(mask_np)
+        elif _requested_person_index(person_index) != 0:
+            try:
+                bboxes = _detect_people_with_torchvision(
+                    img_bgr,
+                    bbox_threshold,
+                    torch.device(loaded["device"]),
+                )
+            except Exception as exc:
+                print(f"[SAM3DBody] [WARNING] Automatic person detection failed: {exc}")
+                bboxes = None
 
         # Save image to temporary file (required by SAM3DBodyEstimator)
         with tempfile.NamedTemporaryFile(suffix='.jpg', delete=False) as tmp:
@@ -370,8 +435,25 @@ class SAM3DBodyProcess:
 
     def _create_debug_visualization(self, img_bgr, outputs, faces):
         """Create a debug visualization of the results."""
-        # Return original image for now
-        return img_bgr
+        debug = img_bgr.copy()
+        for index, output in enumerate(outputs):
+            bbox = output.get("bbox", None)
+            if bbox is None:
+                continue
+            box = np.asarray(bbox, dtype=np.float32).reshape(-1)[:4]
+            x1, y1, x2, y2 = [int(round(v)) for v in box]
+            cv2.rectangle(debug, (x1, y1), (x2, y2), (0, 220, 255), 2)
+            cv2.putText(
+                debug,
+                str(index),
+                (x1, max(0, y1 - 6)),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.8,
+                (0, 220, 255),
+                2,
+                cv2.LINE_AA,
+            )
+        return debug
 
 class SAM3DBodyProcessAdvanced:
     """
@@ -533,6 +615,16 @@ class SAM3DBodyProcessAdvanced:
         if mask is not None:
             mask_np = comfy_mask_to_numpy(mask)
             mask_np, bboxes = _prepare_masks_and_bboxes(mask_np)
+        elif _requested_person_index(person_index) != 0:
+            try:
+                bboxes = _detect_people_with_torchvision(
+                    img_bgr,
+                    bbox_threshold,
+                    device,
+                )
+            except Exception as exc:
+                print(f"[SAM3DBody] [WARNING] Automatic person detection failed: {exc}")
+                bboxes = None
 
         # Save to temp file
         with tempfile.NamedTemporaryFile(suffix='.jpg', delete=False) as tmp:
@@ -572,7 +664,25 @@ class SAM3DBodyProcessAdvanced:
 
     def _create_debug_visualization(self, img_bgr, outputs, faces):
         """Create debug visualization."""
-        return img_bgr
+        debug = img_bgr.copy()
+        for index, output in enumerate(outputs):
+            bbox = output.get("bbox", None)
+            if bbox is None:
+                continue
+            box = np.asarray(bbox, dtype=np.float32).reshape(-1)[:4]
+            x1, y1, x2, y2 = [int(round(v)) for v in box]
+            cv2.rectangle(debug, (x1, y1), (x2, y2), (0, 220, 255), 2)
+            cv2.putText(
+                debug,
+                str(index),
+                (x1, max(0, y1 - 6)),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.8,
+                (0, 220, 255),
+                2,
+                cv2.LINE_AA,
+            )
+        return debug
 
 
 # Register nodes
