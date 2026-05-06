@@ -343,6 +343,37 @@ def _camera_state_from_pose(position, target, up=None, legacy=None):
     return state
 
 
+def _camera_state_from_explicit_pose(pose, target, up=None, legacy=None):
+    pose = np.asarray(pose, dtype=np.float32).reshape(4, 4)
+    target = np.asarray(target, dtype=np.float32)
+    if up is None:
+        up = pose[:3, 1]
+    up = np.asarray(up, dtype=np.float32)
+    position = pose[:3, 3]
+
+    state = {
+        "camera_pose": pose.tolist(),
+        "camera_position": [float(position[0]), float(position[1]), float(position[2])],
+        "camera_target": [float(target[0]), float(target[1]), float(target[2])],
+        "camera_up": [
+            float(up[0]),
+            float(up[1]),
+            float(up[2]),
+        ],
+        "pivot_x": float(target[0]),
+        "pivot_y": float(target[1]),
+        "pivot_z": float(target[2]),
+        "distance": float(np.linalg.norm(position - target)),
+    }
+    if legacy:
+        state.update({
+            "yaw_deg": float(legacy.get("yaw_deg", 0.0)),
+            "pitch_deg": float(legacy.get("pitch_deg", 0.0)),
+            "roll_deg": float(legacy.get("roll_deg", 0.0)),
+        })
+    return state
+
+
 def _camera_state_from_parameters(pivot, cam_pos, yaw_deg, pitch_deg, roll_deg, up=None):
     return _camera_state_from_pose(
         position=cam_pos,
@@ -434,20 +465,39 @@ def _position_mesh_people(meshes):
     if not meshes:
         return meshes
 
-    primary_camera = meshes[0].get("camera")
-    if primary_camera is None or len(meshes) == 1:
-        for mesh in meshes:
-            mesh["vertices_positioned"] = mesh["vertices"]
-        return meshes
-
-    primary_camera = np.asarray(primary_camera, dtype=np.float32).reshape(1, 3)
+    cameras = []
+    world_vertices = []
     for mesh in meshes:
         camera = mesh.get("camera")
+        vertices = np.asarray(mesh["vertices"], dtype=np.float32)
         if camera is None:
-            mesh["vertices_positioned"] = mesh["vertices"]
+            cameras.append(None)
+            world_vertices.append(vertices)
             continue
         camera = np.asarray(camera, dtype=np.float32).reshape(1, 3)
-        mesh["vertices_positioned"] = mesh["vertices"] + (camera - primary_camera)
+        cameras.append(camera)
+        world_vertices.append(vertices + camera)
+
+    valid_cameras = [camera for camera in cameras if camera is not None]
+    if not valid_cameras:
+        for mesh in meshes:
+            mesh["vertices_positioned"] = mesh["vertices"]
+            mesh["render_camera"] = None
+        return meshes
+
+    if len(meshes) == 1:
+        render_camera = valid_cameras[0]
+        meshes[0]["vertices_positioned"] = meshes[0]["vertices"]
+        meshes[0]["render_camera"] = render_camera.reshape(3)
+        return meshes
+
+    combined_world = np.concatenate(world_vertices, axis=0)
+    render_camera = (
+        (np.max(combined_world, axis=0) + np.min(combined_world, axis=0)) / 2.0
+    ).astype(np.float32).reshape(1, 3)
+    for mesh, vertices_world in zip(meshes, world_vertices):
+        mesh["vertices_positioned"] = vertices_world - render_camera
+        mesh["render_camera"] = render_camera.reshape(3)
     return meshes
 
 
@@ -716,7 +766,9 @@ class SAM3DBodyRenderOffsetView:
         if combined_vertices_render is None or combined_faces is None:
             raise RuntimeError("Mesh vertices/faces not found in mesh_data")
 
-        camera = primary_mesh["camera"]
+        camera = primary_mesh.get("render_camera")
+        if camera is None:
+            camera = primary_mesh["camera"]
         focal_length = primary_mesh["focal_length"]
 
         ref_img = reference_image[0].cpu().numpy()
@@ -731,9 +783,11 @@ class SAM3DBodyRenderOffsetView:
         pivot = combined_vertices_render.mean(axis=0).astype(np.float32)
         base_cam_pos = camera.copy().astype(np.float32)
         base_cam_pos[0] *= -1.0
+        base_camera_pose = np.eye(4, dtype=np.float32)
+        base_camera_pose[:3, 3] = base_cam_pos
         world_up = np.array([0.0, 1.0, 0.0], dtype=np.float32)
-        parameter_state = _camera_state_from_pose(
-            position=base_cam_pos,
+        parameter_state = _camera_state_from_explicit_pose(
+            pose=base_camera_pose,
             target=pivot,
             up=world_up,
         )
