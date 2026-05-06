@@ -380,6 +380,77 @@ def _sample_preview_points(vertices, max_points=6000):
     return vertices[indices]
 
 
+def _mesh_people(mesh_data):
+    people = mesh_data.get("people")
+    if isinstance(people, list) and people:
+        return people
+    return [mesh_data]
+
+
+def _extract_mesh_people(mesh_data, require_camera=False):
+    extracted = []
+    for fallback_index, person in enumerate(_mesh_people(mesh_data)):
+        vertices = _to_numpy(person.get("vertices"))
+        faces = _to_numpy(person.get("faces"))
+        if vertices is None or faces is None:
+            continue
+
+        item = {
+            "person_index": int(person.get("person_index", fallback_index)),
+            "vertices": np.asarray(vertices, dtype=np.float32),
+            "faces": np.asarray(faces, dtype=np.int32),
+        }
+
+        if require_camera:
+            camera = _to_numpy(person.get("camera"))
+            focal_length = person.get("focal_length")
+            if camera is None or focal_length is None:
+                continue
+            item["camera"] = np.asarray(camera, dtype=np.float32).reshape(-1)[:3]
+            item["focal_length"] = float(np.asarray(focal_length).reshape(-1)[0])
+
+        extracted.append(item)
+    return extracted
+
+
+def _combine_mesh_arrays(meshes, vertices_key="vertices", faces_key="faces"):
+    vertices_parts = []
+    faces_parts = []
+    vertex_offset = 0
+    for mesh in meshes:
+        vertices = np.asarray(mesh[vertices_key], dtype=np.float32)
+        faces = np.asarray(mesh[faces_key], dtype=np.int32)
+        vertices_parts.append(vertices)
+        faces_parts.append(faces + vertex_offset)
+        vertex_offset += len(vertices)
+
+    if not vertices_parts:
+        return None, None
+
+    return np.concatenate(vertices_parts, axis=0), np.concatenate(faces_parts, axis=0)
+
+
+def _position_mesh_people(meshes):
+    if not meshes:
+        return meshes
+
+    primary_camera = meshes[0].get("camera")
+    if primary_camera is None or len(meshes) == 1:
+        for mesh in meshes:
+            mesh["vertices_positioned"] = mesh["vertices"]
+        return meshes
+
+    primary_camera = np.asarray(primary_camera, dtype=np.float32).reshape(1, 3)
+    for mesh in meshes:
+        camera = mesh.get("camera")
+        if camera is None:
+            mesh["vertices_positioned"] = mesh["vertices"]
+            continue
+        camera = np.asarray(camera, dtype=np.float32).reshape(1, 3)
+        mesh["vertices_positioned"] = mesh["vertices"] + (primary_camera - camera)
+    return meshes
+
+
 class SAM3DBodyVisualize:
     """
     Visualizes SAM 3D Body mesh reconstruction results.
@@ -628,22 +699,25 @@ class SAM3DBodyRenderOffsetView:
         except Exception as exc:
             raise RuntimeError(f"SAM3DBody offset renderer requires pyrender + trimesh: {exc}")
 
-        vertices = _to_numpy(mesh_data.get("vertices"))
-        faces = _to_numpy(mesh_data.get("faces"))
-        camera = _to_numpy(mesh_data.get("camera"))
-        focal_length = mesh_data.get("focal_length")
+        mesh_people = _extract_mesh_people(mesh_data, require_camera=True)
+        if not mesh_people:
+            raise RuntimeError("Renderable mesh vertices/faces/camera not found in mesh_data")
 
-        if vertices is None or faces is None:
+        primary_mesh = mesh_people[0]
+        mesh_people = _position_mesh_people(mesh_people)
+        for person in mesh_people:
+            person["vertices_render"] = _transform_vertices_to_render_space(person["vertices_positioned"])
+
+        combined_vertices_render, combined_faces = _combine_mesh_arrays(
+            mesh_people,
+            vertices_key="vertices_render",
+            faces_key="faces",
+        )
+        if combined_vertices_render is None or combined_faces is None:
             raise RuntimeError("Mesh vertices/faces not found in mesh_data")
-        if camera is None:
-            raise RuntimeError("Recovered SAM3D camera not found in mesh_data")
-        if focal_length is None:
-            raise RuntimeError("Recovered SAM3D focal_length not found in mesh_data")
 
-        vertices = np.asarray(vertices, dtype=np.float32)
-        faces = np.asarray(faces, dtype=np.int32)
-        camera = np.asarray(camera, dtype=np.float32).reshape(-1)[:3]
-        focal_length = float(np.asarray(focal_length).reshape(-1)[0])
+        camera = primary_mesh["camera"]
+        focal_length = primary_mesh["focal_length"]
 
         ref_img = reference_image[0].cpu().numpy()
         ref_h, ref_w = ref_img.shape[:2]
@@ -654,8 +728,7 @@ class SAM3DBodyRenderOffsetView:
         cx = ref_w * 0.5 * scale_x
         cy = ref_h * 0.5 * scale_y
 
-        verts_render = _transform_vertices_to_render_space(vertices)
-        pivot = verts_render.mean(axis=0).astype(np.float32)
+        pivot = combined_vertices_render.mean(axis=0).astype(np.float32)
         base_cam_pos = camera.copy().astype(np.float32)
         base_cam_pos[0] *= -1.0
         world_up = np.array([0.0, 1.0, 0.0], dtype=np.float32)
@@ -684,7 +757,6 @@ class SAM3DBodyRenderOffsetView:
         elif bg_preset == "mid_gray":
             bg_r, bg_g, bg_b = 38, 38, 38
 
-        mesh = trimesh.Trimesh(verts_render.copy(), faces.copy(), process=False)
         material = pyrender.MetallicRoughnessMaterial(
             metallicFactor=0.0,
             roughnessFactor=0.8,
@@ -719,7 +791,16 @@ class SAM3DBodyRenderOffsetView:
             ],
             ambient_light=(ambient_intensity, ambient_intensity, ambient_intensity),
         )
-        scene.add(pyrender.Mesh.from_trimesh(mesh, material=material), "mesh")
+        for person in mesh_people:
+            mesh = trimesh.Trimesh(
+                person["vertices_render"].copy(),
+                person["faces"].copy(),
+                process=False,
+            )
+            scene.add(
+                pyrender.Mesh.from_trimesh(mesh, material=material),
+                f"mesh_person_{person['person_index']}",
+            )
 
         camera_node = pyrender.IntrinsicsCamera(
             fx=fx,
@@ -730,7 +811,7 @@ class SAM3DBodyRenderOffsetView:
         )
         scene.add(camera_node, pose=camera_pose)
 
-        mesh_extent = float(np.max(np.ptp(verts_render, axis=0)))
+        mesh_extent = float(np.max(np.ptp(combined_vertices_render, axis=0)))
         light_radius = max(mesh_extent * 2.5, 2.5)
         preview_lighting = {
             "ambient_intensity": float(ambient_intensity),
@@ -794,11 +875,17 @@ class SAM3DBodyRenderOffsetView:
             "rim_intensity": float(rim_intensity),
             "bg_preset": bg_preset,
             "bg_color": [int(bg_r), int(bg_g), int(bg_b)],
+            "people_count": int(mesh_data.get("people_count", len(mesh_people))),
+            "selected_people_count": int(len(mesh_people)),
+            "selected_person_indices": [int(person["person_index"]) for person in mesh_people],
+            "person_index": int(mesh_data.get("person_index", mesh_people[0]["person_index"])),
         }
         ui_data = {
             "preview_mesh": [json.dumps({
-                "vertices": verts_render.tolist(),
-                "faces": faces.tolist(),
+                "vertices": combined_vertices_render.tolist(),
+                "faces": combined_faces.tolist(),
+                "people_count": int(mesh_data.get("people_count", len(mesh_people))),
+                "selected_person_indices": [int(person["person_index"]) for person in mesh_people],
             })],
             "parameter_camera_state": [json.dumps(_camera_state_to_jsonable(parameter_state))],
             "active_camera_state": [json.dumps(_camera_state_to_jsonable(active_state))],
@@ -855,18 +942,16 @@ class SAM3DBodyExportMesh:
             output_dir = folder_paths.get_output_directory()
             full_path = os.path.join(output_dir, filename)
 
-            # Extract mesh data
-            vertices = mesh_data.get("vertices", None)
-            faces = mesh_data.get("faces", None)
+            meshes = _extract_mesh_people(mesh_data, require_camera=True)
+            if meshes:
+                meshes = _position_mesh_people(meshes)
+                vertices, faces = _combine_mesh_arrays(meshes, vertices_key="vertices_positioned")
+            else:
+                meshes = _extract_mesh_people(mesh_data, require_camera=False)
+                vertices, faces = _combine_mesh_arrays(meshes)
 
             if vertices is None or faces is None:
                 raise ValueError("No mesh data available to export")
-
-            # Convert to numpy if needed
-            if isinstance(vertices, torch.Tensor):
-                vertices = vertices.cpu().numpy()
-            if isinstance(faces, torch.Tensor):
-                faces = faces.cpu().numpy()
 
             # Export to STL format
             self._export_stl(vertices, faces, full_path)
@@ -985,21 +1070,27 @@ class SAM3DBodyGetVertices:
         """Extract and display vertex information."""
 
         try:
-            vertices = mesh_data.get("vertices", None)
-            faces = mesh_data.get("faces", None)
+            meshes = _extract_mesh_people(mesh_data, require_camera=True)
+            if meshes:
+                meshes = _position_mesh_people(meshes)
+                vertices, faces = _combine_mesh_arrays(meshes, vertices_key="vertices_positioned")
+            else:
+                meshes = _extract_mesh_people(mesh_data, require_camera=False)
+                vertices, faces = _combine_mesh_arrays(meshes)
             joints = mesh_data.get("joints", None)
 
             info_lines = ["[SAM3DBody] Mesh Information:"]
+            info_lines.append(f"Detected people: {int(mesh_data.get('people_count', len(meshes)))}")
+            info_lines.append(f"Selected people: {len(meshes)}")
+            if meshes:
+                indices = ", ".join(str(mesh["person_index"]) for mesh in meshes)
+                info_lines.append(f"Selected indices: {indices}")
 
             if vertices is not None:
-                if isinstance(vertices, torch.Tensor):
-                    vertices = vertices.cpu().numpy()
                 info_lines.append(f"Vertices: {len(vertices)} points")
                 info_lines.append(f"Vertex shape: {vertices.shape}")
 
             if faces is not None:
-                if isinstance(faces, torch.Tensor):
-                    faces = faces.cpu().numpy()
                 info_lines.append(f"Faces: {len(faces)} triangles")
 
             if joints is not None:

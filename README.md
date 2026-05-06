@@ -39,6 +39,8 @@ comfy node publish
 
 - SAM3D model loader with Hugging Face auto-download
 - single-image SAM3D processing node
+- person selection for SAM3D outputs: `person_index=-1` uses all detected people,
+  while `0..N` selects a specific detected person
 - calibrated offset renderer with pivot, background, and lighting controls
 - interactive browser viewer for scouting the render camera with orbit, pan, roll, and dolly controls
 - optional render `auto` mode that ignores saved viewer camera state and realigns from each SAM3D input for API workflows
