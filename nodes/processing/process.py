@@ -227,7 +227,8 @@ def _load_transformers_sam3_detector(config, device):
     except Exception as exc:
         raise RuntimeError(
             "Transformers SAM3 support is not available in this environment. "
-            "Install/upgrade transformers, or use the torchvision fallback detector."
+            "Install/upgrade transformers and restart ComfyUI, or use the torchvision fallback detector. "
+            f"Import error: {exc}"
         ) from exc
 
     model_path = config.get("model_path") or config.get("repo_id")
@@ -554,6 +555,7 @@ class SAM3DBodyProcess:
         # Convert mask if provided and compute bounding box
         mask_np = None
         bboxes = None
+        detector_error = None
         requested_index = _requested_person_index(person_index)
         if person_detector is not None:
             try:
@@ -564,9 +566,15 @@ class SAM3DBodyProcess:
                     torch.device(loaded["device"]),
                 )
             except Exception as exc:
-                print(f"[SAM3DBody] [WARNING] Person detector failed: {exc}")
+                detector_error = exc
+                print(f"[SAM3DBody] [ERROR] Person detector failed: {exc}")
                 bboxes = None
             if bboxes is None and requested_index != 0:
+                if detector_error is not None:
+                    raise RuntimeError(
+                        "Person detector failed before returning person boxes. "
+                        f"{detector_error}"
+                    ) from detector_error
                 raise RuntimeError(
                     "Person detector did not return any person boxes. "
                     "Try lowering bbox_threshold or disconnect the detector to use the full-image fallback."
@@ -805,6 +813,7 @@ class SAM3DBodyProcessAdvanced:
         img_bgr = comfy_image_to_numpy(image)
         mask_np = None
         bboxes = None
+        detector_error = None
         requested_index = _requested_person_index(person_index)
         if person_detector is not None:
             try:
@@ -815,9 +824,15 @@ class SAM3DBodyProcessAdvanced:
                     device,
                 )
             except Exception as exc:
-                print(f"[SAM3DBody] [WARNING] Person detector failed: {exc}")
+                detector_error = exc
+                print(f"[SAM3DBody] [ERROR] Person detector failed: {exc}")
                 bboxes = None
             if bboxes is None and requested_index != 0:
+                if detector_error is not None:
+                    raise RuntimeError(
+                        "Person detector failed before returning person boxes. "
+                        f"{detector_error}"
+                    ) from detector_error
                 raise RuntimeError(
                     "Person detector did not return any person boxes. "
                     "Try lowering bbox_threshold or disconnect the detector to use the full-image fallback."
