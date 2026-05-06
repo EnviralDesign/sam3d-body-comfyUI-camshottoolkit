@@ -26,7 +26,25 @@ def configure_headless_opengl() -> None:
     print("[sam3d-camshottoolkit] Headless display detected; using PYOPENGL_PLATFORM=egl.")
 
 
+def configure_transformers_flash_attn_mapping() -> None:
+    """
+    Work around Transformers builds that know about flash-attn checks but do not
+    include the import-utils distribution mapping for flash_attn.
+    """
+    try:
+        from transformers.utils.import_utils import PACKAGE_DISTRIBUTION_MAPPING
+    except Exception:
+        return
+
+    if "flash_attn" in PACKAGE_DISTRIBUTION_MAPPING:
+        return
+
+    PACKAGE_DISTRIBUTION_MAPPING["flash_attn"] = ["flash-attn"]
+    print("[sam3d-camshottoolkit] Patched Transformers flash_attn distribution mapping.")
+
+
 configure_headless_opengl()
+configure_transformers_flash_attn_mapping()
 
 spec = importlib.util.spec_from_file_location("sam3d_camshottoolkit_runtime_deps", RUNTIME_DEPS_PATH)
 if spec is None or spec.loader is None:

@@ -93,6 +93,15 @@ _DETECTOR_CACHE = {}
 _PERSON_DETECTOR_CACHE = {}
 
 
+def _configure_transformers_flash_attn_mapping():
+    try:
+        from transformers.utils.import_utils import PACKAGE_DISTRIBUTION_MAPPING
+    except Exception:
+        return
+
+    PACKAGE_DISTRIBUTION_MAPPING.setdefault("flash_attn", ["flash-attn"])
+
+
 def _load_sam3d_model(model_config: dict):
     """
     Load SAM 3D Body model from config paths.
@@ -221,6 +230,8 @@ def _load_transformers_sam3_detector(config, device):
     key = ("transformers_sam3", config.get("model_path"), str(device))
     if key in _PERSON_DETECTOR_CACHE:
         return _PERSON_DETECTOR_CACHE[key]
+
+    _configure_transformers_flash_attn_mapping()
 
     try:
         from transformers import Sam3Model, Sam3Processor
