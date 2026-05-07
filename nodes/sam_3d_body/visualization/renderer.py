@@ -1,8 +1,9 @@
 # Copyright (c) Meta Platforms, Inc. and affiliates.
 
 import os
+import sys
 
-if "PYOPENGL_PLATFORM" not in os.environ:
+if "PYOPENGL_PLATFORM" not in os.environ and os.name != "nt" and sys.platform != "darwin":
     os.environ["PYOPENGL_PLATFORM"] = "egl"
 from typing import List, Optional
 

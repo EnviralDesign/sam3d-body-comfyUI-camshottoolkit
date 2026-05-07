@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import os
+import sys
 from pathlib import Path
 
 
@@ -18,7 +19,7 @@ def configure_headless_opengl() -> None:
     """
     if os.environ.get("PYOPENGL_PLATFORM"):
         return
-    if os.name == "nt":
+    if os.name == "nt" or sys.platform == "darwin":
         return
     if os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY"):
         return
