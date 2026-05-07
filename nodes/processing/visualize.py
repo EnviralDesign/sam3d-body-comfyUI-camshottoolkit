@@ -140,16 +140,21 @@ def _prepare_pyrender_backend():
     Ensure pyrender uses a platform-appropriate backend.
 
     SAM3DBody's bundled renderer defaults PYOPENGL_PLATFORM=egl, which breaks on
-    standard Windows and macOS setups that do not ship an EGL loader. On those
-    platforms we want pyrender to use its default hidden pyglet window backend.
+    standard Windows and macOS setups that do not ship an EGL loader. Windows can
+    use pyrender's default hidden pyglet window backend. macOS needs OSMesa in
+    ComfyUI because pyglet may touch Cocoa UI state from a worker thread.
 
     On headless Linux hosts there is no X/Wayland display, so pyglet cannot
     create even a hidden window. Prefer EGL there unless the user chose a
     backend explicitly. This duplicates prestartup defensively for nonstandard
     load paths, but still runs before pyrender is imported in this node.
     """
-    if (os.name == "nt" or sys.platform == "darwin") and os.environ.get("PYOPENGL_PLATFORM", "").lower() == "egl":
+    platform = os.environ.get("PYOPENGL_PLATFORM", "").lower()
+    if os.name == "nt" and platform == "egl":
         os.environ.pop("PYOPENGL_PLATFORM", None)
+        return
+    if sys.platform == "darwin" and platform in {"", "egl"}:
+        os.environ["PYOPENGL_PLATFORM"] = "osmesa"
         return
     if (
         os.name != "nt"

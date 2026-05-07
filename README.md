@@ -63,6 +63,8 @@ comfy node publish
   The detector loader tries `facebook/sam3` first in `auto` mode and falls back
   to an ungated mirror such as `jetjodh/sam3` if official access is gated.
 - The render node uses `pyrender` in Python, not a Three.js viewport.
+- On macOS, install OSMesa first with `brew install osmesa`; the package defaults
+  PyOpenGL to `osmesa` to avoid pyglet/Cocoa worker-thread crashes in ComfyUI.
 - On headless Linux GPU hosts, the package defaults PyOpenGL to EGL during
   Comfy prestartup so offscreen rendering works without an X display.
 - `install.py` is intentionally a no-op for Registry compliance. Dependency installation should be handled by ComfyUI-Manager or an explicit `pip install -r requirements.txt`.
