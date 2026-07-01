@@ -13,14 +13,12 @@ Provides conversion functions between ComfyUI tensor formats and other formats
 Also handles Blender auto-detection and installation for FBX export.
 """
 
-import os
-import sys
-from pathlib import Path
-import numpy as np
-import torch
-from PIL import Image
+from .lazy_import import LazyModule
 
-import folder_paths
+
+np = LazyModule("numpy")
+torch = LazyModule("torch")
+Image = LazyModule("PIL.Image")
 
 
 def comfy_image_to_pil(image):
@@ -136,4 +134,3 @@ def vertices_to_point_cloud(vertices):
         "points": vertices,
         "colors": None,  # Can be added if vertex colors are available
     }
-

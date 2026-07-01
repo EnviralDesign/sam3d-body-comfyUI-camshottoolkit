@@ -1,10 +1,19 @@
 import os
-import folder_paths
 from ..runtime_deps import ensure_runtime_dependencies
 
-# Default model path in ComfyUI models folder
-DEFAULT_MODEL_PATH = os.path.join(folder_paths.models_dir, "sam3dbody")
-DEFAULT_DETECTOR_PATH = os.path.join(folder_paths.models_dir, "sam3_person_detector")
+
+def _models_dir():
+    import folder_paths
+
+    return folder_paths.models_dir
+
+
+def _default_model_path():
+    return os.path.join(_models_dir(), "sam3dbody")
+
+
+def _default_detector_path():
+    return os.path.join(_models_dir(), "sam3_person_detector")
 
 
 def _safe_repo_dir(repo_id):
@@ -76,7 +85,7 @@ class LoadSAM3DBodyModel:
 
         # Always derive the model path from the local ComfyUI install to keep
         # workflows portable across machines.
-        model_path = os.path.abspath(DEFAULT_MODEL_PATH)
+        model_path = os.path.abspath(_default_model_path())
         print(f"[SAM3DBody] Using model path: {model_path}")
 
         # Expected file paths
@@ -104,7 +113,7 @@ class LoadSAM3DBodyModel:
                     f"Please manually download from:\n"
                     f"  https://huggingface.co/jetjodh/sam-3d-body-dinov3\n\n"
                     f"And place the model files at:\n"
-                    f"  {DEFAULT_MODEL_PATH}/\n"
+                    f"  {_default_model_path()}/\n"
                     f"    +-- model.ckpt          (SAM 3D Body checkpoint)\n"
                     f"    +-- model_config.yaml   (model configuration)\n"
                     f"    \\-- assets/\n"
@@ -229,7 +238,7 @@ class LoadSAM3PersonDetector:
                     repo_id=repo_id,
                     implementation=implementation,
                     checkpoint_filename=checkpoint_filename,
-                    local_base_dir=os.path.abspath(DEFAULT_DETECTOR_PATH),
+                    local_base_dir=os.path.abspath(_default_detector_path()),
                 )
                 if repo_id != official_repo_id:
                     print(f"[SAM3DBody] Using SAM3 fallback mirror: {repo_id}")

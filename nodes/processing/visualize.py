@@ -9,18 +9,16 @@ Provides nodes for rendering and visualizing 3D mesh reconstructions.
 import os
 import sys
 import json
-import numpy as np
-import cv2
-import torch
 from pathlib import Path
-import folder_paths
 from ..base import numpy_to_comfy_image
+from ..lazy_import import LazyModule
 from ..runtime_deps import ensure_runtime_dependencies
 
-# Add sam-3d-body to Python path if it exists
-_SAM3D_BODY_PATH = Path(__file__).parent.parent.parent.parent.parent.parent / "sam-3d-body"
-if _SAM3D_BODY_PATH.exists() and str(_SAM3D_BODY_PATH) not in sys.path:
-    sys.path.insert(0, str(_SAM3D_BODY_PATH))
+
+np = LazyModule("numpy")
+cv2 = LazyModule("cv2")
+torch = LazyModule("torch")
+folder_paths = LazyModule("folder_paths")
 
 
 def _to_numpy(value):

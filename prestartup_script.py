@@ -35,16 +35,23 @@ def configure_transformers_flash_attn_mapping() -> None:
     """
     Work around Transformers builds that know about flash-attn checks but do not
     include the import-utils distribution mapping for flash_attn.
+
+    Keep this prestartup hook cheap: do not import Transformers just to patch the
+    mapping. The detector load path applies the same patch before importing
+    SAM3-specific classes.
     """
-    try:
-        from transformers.utils.import_utils import PACKAGE_DISTRIBUTION_MAPPING
-    except Exception:
+    import_utils = sys.modules.get("transformers.utils.import_utils")
+    if import_utils is None:
         return
 
-    if "flash_attn" in PACKAGE_DISTRIBUTION_MAPPING:
+    package_mapping = getattr(import_utils, "PACKAGE_DISTRIBUTION_MAPPING", None)
+    if package_mapping is None:
         return
 
-    PACKAGE_DISTRIBUTION_MAPPING["flash_attn"] = ["flash-attn"]
+    if "flash_attn" in package_mapping:
+        return
+
+    package_mapping["flash_attn"] = ["flash-attn"]
     print("[sam3d-camshottoolkit] Patched Transformers flash_attn distribution mapping.")
 
 

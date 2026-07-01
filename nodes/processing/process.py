@@ -1,9 +1,12 @@
 import os
 import tempfile
-import torch
-import numpy as np
-import cv2
+from ..lazy_import import LazyModule
 from ..runtime_deps import ensure_runtime_dependencies
+
+
+torch = LazyModule("torch")
+np = LazyModule("numpy")
+cv2 = LazyModule("cv2")
 
 # =============================================================================
 # Helper functions (inlined to avoid relative import issues in worker)
