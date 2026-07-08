@@ -11,13 +11,11 @@ REQUIRED_MODULES = {
     "einops": "einops",
     "huggingface_hub": "huggingface-hub",
     "omegaconf": "omegaconf",
-    "pyrender": "pyrender",
     "pytorch_lightning": "pytorch-lightning",
     "roma": "roma",
     "timm": "timm",
     "torchvision": "torchvision",
     "transformers": "transformers",
-    "trimesh": "trimesh",
     "yacs": "yacs",
 }
 

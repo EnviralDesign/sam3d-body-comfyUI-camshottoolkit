@@ -6,13 +6,11 @@ Visualization nodes for SAM 3D Body outputs.
 Provides nodes for rendering and visualizing 3D mesh reconstructions.
 """
 
-import os
-import sys
 import json
-from pathlib import Path
 from ..base import numpy_to_comfy_image
 from ..lazy_import import LazyModule
 from ..runtime_deps import ensure_runtime_dependencies
+from .mesh_renderer import render_mesh
 
 
 np = LazyModule("numpy")
@@ -124,44 +122,6 @@ def _transform_vertices_to_render_space(vertices):
     transformed[:, 1] *= -1.0
     transformed[:, 2] *= -1.0
     return transformed
-
-
-def _transform_points_to_render_space(points):
-    transformed = points.copy().astype(np.float32)
-    transformed[..., 1] *= -1.0
-    transformed[..., 2] *= -1.0
-    return transformed
-
-
-def _prepare_pyrender_backend():
-    """
-    Ensure pyrender uses a platform-appropriate backend.
-
-    SAM3DBody's bundled renderer defaults PYOPENGL_PLATFORM=egl, which breaks on
-    standard Windows and macOS setups that do not ship an EGL loader. Windows can
-    use pyrender's default hidden pyglet window backend. macOS needs OSMesa in
-    ComfyUI because pyglet may touch Cocoa UI state from a worker thread.
-
-    On headless Linux hosts there is no X/Wayland display, so pyglet cannot
-    create even a hidden window. Prefer EGL there unless the user chose a
-    backend explicitly. This duplicates prestartup defensively for nonstandard
-    load paths, but still runs before pyrender is imported in this node.
-    """
-    platform = os.environ.get("PYOPENGL_PLATFORM", "").lower()
-    if os.name == "nt" and platform == "egl":
-        os.environ.pop("PYOPENGL_PLATFORM", None)
-        return
-    if sys.platform == "darwin" and platform in {"", "egl"}:
-        os.environ["PYOPENGL_PLATFORM"] = "osmesa"
-        return
-    if (
-        os.name != "nt"
-        and sys.platform != "darwin"
-        and not os.environ.get("PYOPENGL_PLATFORM")
-        and not os.environ.get("DISPLAY")
-        and not os.environ.get("WAYLAND_DISPLAY")
-    ):
-        os.environ["PYOPENGL_PLATFORM"] = "egl"
 
 
 def _spherical_offset(yaw_deg, pitch_deg, radius):
@@ -746,12 +706,6 @@ class SAM3DBodyRenderOffsetView:
         interactive_state="",
     ):
         ensure_runtime_dependencies("Cam Shot Toolkit: Render Offset View")
-        _prepare_pyrender_backend()
-        try:
-            import pyrender
-            import trimesh
-        except Exception as exc:
-            raise RuntimeError(f"SAM3DBody offset renderer requires pyrender + trimesh: {exc}")
 
         mesh_people = _extract_mesh_people(mesh_data, require_camera=True)
         if not mesh_people:
@@ -815,23 +769,6 @@ class SAM3DBodyRenderOffsetView:
         elif bg_preset == "mid_gray":
             bg_r, bg_g, bg_b = 38, 38, 38
 
-        material = pyrender.MetallicRoughnessMaterial(
-            metallicFactor=0.0,
-            roughnessFactor=0.8,
-            alphaMode="OPAQUE",
-            baseColorFactor=(
-                float(mesh_r) / 255.0,
-                float(mesh_g) / 255.0,
-                float(mesh_b) / 255.0,
-                1.0,
-            ),
-        )
-
-        renderer = pyrender.OffscreenRenderer(
-            viewport_width=int(render_width),
-            viewport_height=int(render_height),
-        )
-
         ambient_intensity, key_intensity, fill_intensity, rim_intensity = _resolve_lighting(
             lighting_preset,
             float(ambient_intensity),
@@ -839,35 +776,6 @@ class SAM3DBodyRenderOffsetView:
             float(fill_intensity),
             float(rim_intensity),
         )
-
-        scene = pyrender.Scene(
-            bg_color=[
-                float(bg_r) / 255.0,
-                float(bg_g) / 255.0,
-                float(bg_b) / 255.0,
-                0.0,
-            ],
-            ambient_light=(ambient_intensity, ambient_intensity, ambient_intensity),
-        )
-        for person in mesh_people:
-            mesh = trimesh.Trimesh(
-                person["vertices_render"].copy(),
-                person["faces"].copy(),
-                process=False,
-            )
-            scene.add(
-                pyrender.Mesh.from_trimesh(mesh, material=material),
-                f"mesh_person_{person['person_index']}",
-            )
-
-        camera_node = pyrender.IntrinsicsCamera(
-            fx=fx,
-            fy=fy,
-            cx=cx,
-            cy=cy,
-            zfar=1e12,
-        )
-        scene.add(camera_node, pose=camera_pose)
 
         mesh_extent = float(np.max(np.ptp(combined_vertices_render, axis=0)))
         light_radius = max(mesh_extent * 2.5, 2.5)
@@ -884,29 +792,27 @@ class SAM3DBodyRenderOffsetView:
         if key_intensity > 0.0:
             key_pos = pivot + _spherical_offset(key_yaw, key_pitch, light_radius)
             preview_lighting["key_position"] = [float(x) for x in key_pos]
-            scene.add(
-                pyrender.PointLight(color=np.ones(3), intensity=key_intensity),
-                pose=_camera_pose_look_at(key_pos, pivot, world_up=world_up),
-            )
         if fill_intensity > 0.0:
             fill_pos = pivot + _spherical_offset(key_yaw - 55.0, max(10.0, key_pitch * 0.45), light_radius * 0.92)
             preview_lighting["fill_position"] = [float(x) for x in fill_pos]
-            scene.add(
-                pyrender.PointLight(color=np.ones(3), intensity=fill_intensity),
-                pose=_camera_pose_look_at(fill_pos, pivot, world_up=world_up),
-            )
         if rim_intensity > 0.0:
             rim_pos = pivot + _spherical_offset(key_yaw + 180.0, max(15.0, key_pitch * 0.7), light_radius * 1.08)
             preview_lighting["rim_position"] = [float(x) for x in rim_pos]
-            scene.add(
-                pyrender.PointLight(color=np.ones(3), intensity=rim_intensity),
-                pose=_camera_pose_look_at(rim_pos, pivot, world_up=world_up),
-            )
 
-        color, _ = renderer.render(scene, flags=pyrender.RenderFlags.RGBA)
-        renderer.delete()
-
-        rendered_rgb = color[:, :, :3].astype(np.uint8)
+        rendered_rgb = render_mesh(
+            vertices=combined_vertices_render,
+            faces=combined_faces,
+            camera_pose=camera_pose,
+            fx=fx,
+            fy=fy,
+            cx=cx,
+            cy=cy,
+            width=render_width,
+            height=render_height,
+            bg_color=[int(bg_r), int(bg_g), int(bg_b)],
+            mesh_color=[int(mesh_r), int(mesh_g), int(mesh_b)],
+            lighting=preview_lighting,
+        )
         rendered_bgr = rendered_rgb[:, :, ::-1].copy()
         result = numpy_to_comfy_image(rendered_bgr)
 

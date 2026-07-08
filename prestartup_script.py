@@ -1,34 +1,12 @@
 from __future__ import annotations
 
 import importlib.util
-import os
 import sys
 from pathlib import Path
 
 
 REPO_DIR = Path(__file__).resolve().parent
 RUNTIME_DEPS_PATH = REPO_DIR / "nodes" / "runtime_deps.py"
-
-
-def configure_headless_opengl() -> None:
-    """
-    Prefer an offscreen PyOpenGL backend for pyrender when ComfyUI starts.
-
-    PyOpenGL chooses its platform the first time OpenGL/pyrender is imported, so
-    this has to run during Comfy prestartup. Respect explicit user choices.
-    """
-    if os.environ.get("PYOPENGL_PLATFORM"):
-        return
-    if sys.platform == "darwin":
-        os.environ["PYOPENGL_PLATFORM"] = "osmesa"
-        print("[sam3d-camshottoolkit] macOS detected; using PYOPENGL_PLATFORM=osmesa.")
-        return
-    if os.name == "nt":
-        return
-    if os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY"):
-        return
-    os.environ["PYOPENGL_PLATFORM"] = "egl"
-    print("[sam3d-camshottoolkit] Headless display detected; using PYOPENGL_PLATFORM=egl.")
 
 
 def configure_transformers_flash_attn_mapping() -> None:
@@ -55,7 +33,6 @@ def configure_transformers_flash_attn_mapping() -> None:
     print("[sam3d-camshottoolkit] Patched Transformers flash_attn distribution mapping.")
 
 
-configure_headless_opengl()
 configure_transformers_flash_attn_mapping()
 
 spec = importlib.util.spec_from_file_location("sam3d_camshottoolkit_runtime_deps", RUNTIME_DEPS_PATH)
