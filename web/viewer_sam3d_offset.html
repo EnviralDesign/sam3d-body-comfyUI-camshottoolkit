@@ -152,12 +152,43 @@
             return Number.isFinite(n) ? n : fallback;
         }
 
+        function optionalNumber(value) {
+            const n = Number(value);
+            return Number.isFinite(n) ? n : null;
+        }
+
+        function rgbFromArray(value) {
+            if (!Array.isArray(value) || value.length < 3) {
+                return null;
+            }
+            return [
+                clamp(Math.round(numberOr(value[0], 0)), 0, 255),
+                clamp(Math.round(numberOr(value[1], 0)), 0, 255),
+                clamp(Math.round(numberOr(value[2], 0)), 0, 255),
+            ];
+        }
+
         function colorFromRgb255(r, g, b, fallback = [255, 255, 255]) {
             return new THREE.Color().setRGB(
                 clamp(numberOr(r, fallback[0]), 0, 255) / 255,
                 clamp(numberOr(g, fallback[1]), 0, 255) / 255,
                 clamp(numberOr(b, fallback[2]), 0, 255) / 255,
                 THREE.SRGBColorSpace,
+            );
+        }
+
+        function getPreviewLighting() {
+            return parseJson(uiPayload?.preview_lighting?.[0] || "", {}) || {};
+        }
+
+        function optionalVec3(value) {
+            if (!Array.isArray(value) || value.length < 3) {
+                return null;
+            }
+            return new THREE.Vector3(
+                numberOr(value[0], 0),
+                numberOr(value[1], 0),
+                numberOr(value[2], 0),
             );
         }
 
@@ -187,6 +218,17 @@
         }
 
         function resolveBgRgb() {
+            const previewLighting = getPreviewLighting();
+            const previewBg = rgbFromArray(previewLighting.bg_color);
+            if (previewBg) {
+                return previewBg;
+            }
+
+            const uiBg = rgbFromArray(parseJson(uiPayload?.bg_color?.[0] || "", null));
+            if (uiBg) {
+                return uiBg;
+            }
+
             const preset = String(nodeState?.bg_preset || "mid_gray");
             if (preset === "black") {
                 return [0, 0, 0];
@@ -201,6 +243,18 @@
                 numberOr(nodeState?.bg_r, 38),
                 numberOr(nodeState?.bg_g, 38),
                 numberOr(nodeState?.bg_b, 38),
+            ];
+        }
+
+        function resolveMeshRgb() {
+            const previewMeshColor = rgbFromArray(getPreviewLighting().mesh_color);
+            if (previewMeshColor) {
+                return previewMeshColor;
+            }
+            return [
+                clamp(Math.round(numberOr(nodeState?.mesh_r, 235)), 0, 255),
+                clamp(Math.round(numberOr(nodeState?.mesh_g, 235)), 0, 255),
+                clamp(Math.round(numberOr(nodeState?.mesh_b, 235)), 0, 255),
             ];
         }
 
@@ -452,8 +506,9 @@
             geometry.computeVertexNormals();
             geometry.computeBoundingSphere();
 
+            const meshRgb = resolveMeshRgb();
             const material = new THREE.MeshStandardMaterial({
-                color: colorFromRgb255(nodeState?.mesh_r, nodeState?.mesh_g, nodeState?.mesh_b, [235, 235, 235]),
+                color: colorFromRgb255(meshRgb[0], meshRgb[1], meshRgb[2], [235, 235, 235]),
                 metalness: 0.0,
                 roughness: 0.8,
                 side: THREE.DoubleSide,
@@ -477,20 +532,26 @@
             stage.style.background = bgCss;
             canvas.style.background = bgCss;
 
+            const meshRgb = resolveMeshRgb();
             if (mesh && mesh.material) {
-                mesh.material.color.copy(colorFromRgb255(nodeState?.mesh_r, nodeState?.mesh_g, nodeState?.mesh_b, [235, 235, 235]));
+                mesh.material.color.copy(colorFromRgb255(meshRgb[0], meshRgb[1], meshRgb[2], [235, 235, 235]));
             }
 
+            const previewLighting = getPreviewLighting();
             const target = controls?.target || new THREE.Vector3();
             const meshRadius = mesh?.geometry?.boundingSphere?.radius || 1.0;
             const lightRadius = Math.max(meshRadius * 2.5, 2.5);
-            const [ambient, key, fill, rim] = resolveLighting(
+            let [ambient, key, fill, rim] = resolveLighting(
                 String(nodeState?.lighting_preset || "studio"),
                 Number(nodeState?.ambient_intensity ?? 0.35),
                 Number(nodeState?.key_intensity ?? 14.0),
                 Number(nodeState?.fill_intensity ?? 6.0),
                 Number(nodeState?.rim_intensity ?? 8.0),
             );
+            ambient = optionalNumber(previewLighting.ambient_intensity) ?? ambient;
+            key = optionalNumber(previewLighting.key_intensity) ?? key;
+            fill = optionalNumber(previewLighting.fill_intensity) ?? fill;
+            rim = optionalNumber(previewLighting.rim_intensity) ?? rim;
 
             ambientLight.intensity = ambient;
             keyLight.intensity = key;
@@ -499,9 +560,9 @@
 
             const keyYaw = Number(nodeState?.key_yaw ?? 35.0);
             const keyPitch = Number(nodeState?.key_pitch ?? 35.0);
-            keyLight.position.copy(target).add(sphericalOffset(keyYaw, keyPitch, lightRadius));
-            fillLight.position.copy(target).add(sphericalOffset(keyYaw - 55.0, Math.max(10.0, keyPitch * 0.45), lightRadius * 0.92));
-            rimLight.position.copy(target).add(sphericalOffset(keyYaw + 180.0, Math.max(15.0, keyPitch * 0.7), lightRadius * 1.08));
+            keyLight.position.copy(optionalVec3(previewLighting.key_position) || target.clone().add(sphericalOffset(keyYaw, keyPitch, lightRadius)));
+            fillLight.position.copy(optionalVec3(previewLighting.fill_position) || target.clone().add(sphericalOffset(keyYaw - 55.0, Math.max(10.0, keyPitch * 0.45), lightRadius * 0.92)));
+            rimLight.position.copy(optionalVec3(previewLighting.rim_position) || target.clone().add(sphericalOffset(keyYaw + 180.0, Math.max(15.0, keyPitch * 0.7), lightRadius * 1.08)));
         }
 
         function updateHud() {
@@ -601,6 +662,7 @@
                 param: uiPayload.parameter_camera_state?.[0] || "",
                 intr: uiPayload.render_size?.[0] || "",
                 bg: uiPayload.bg_color?.[0] || "",
+                lighting: uiPayload.preview_lighting?.[0] || "",
                 state: nodeState,
             });
             if (signature === lastStateSignature) {
