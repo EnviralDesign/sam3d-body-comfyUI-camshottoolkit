@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "sam3d-camshot-toolkit"
-version = "0.2.9"
+version = "0.2.10"
 description = "Minimal SAM3D body reconstruction toolkit for calibrated camera-shot workflows in ComfyUI."
 license = { file = "LICENSE" }
 readme = "README.md"
@@ -13,6 +13,7 @@ dynamic = ["dependencies"]
 classifiers = [
     "Programming Language :: Python :: 3",
     "Operating System :: OS Independent",
+    "Environment :: GPU :: NVIDIA CUDA",
 ]
 
 [tool.setuptools.dynamic]
@@ -31,3 +32,4 @@ Documentation = "https://github.com/EnviralDesign/sam3d-body-comfyUI-camshottool
 [tool.comfy]
 PublisherId = "enviral-design"
 DisplayName = "SAM3D Cam Shot Toolkit"
+requires-comfyui = ">=0.27.0"

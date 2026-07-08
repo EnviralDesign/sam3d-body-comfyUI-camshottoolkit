@@ -606,7 +606,7 @@ class SAM3DBodyRenderOffsetView:
                     "tooltip": "Ignore saved viewer camera state and align from the current SAM3D input on every run."
                 }),
                 "show_viewer_hud": ("BOOLEAN", {
-                    "default": True,
+                    "default": False,
                     "tooltip": "Show the camera HUD overlay in the interactive viewer."
                 }),
                 "focal_scale": ("FLOAT", {
@@ -687,7 +687,7 @@ class SAM3DBodyRenderOffsetView:
         enable_viewer=True,
         use_interactive_view=True,
         auto=False,
-        show_viewer_hud=True,
+        show_viewer_hud=False,
         focal_scale=1.0,
         lighting_preset="studio",
         ambient_intensity=0.35,

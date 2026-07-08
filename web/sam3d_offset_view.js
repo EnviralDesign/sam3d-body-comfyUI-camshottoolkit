@@ -52,7 +52,7 @@ function ensureWidgetDefaults(node) {
         ["enable_viewer", true],
         ["use_interactive_view", true],
         ["auto", false],
-        ["show_viewer_hud", true],
+        ["show_viewer_hud", false],
     ];
     for (const [name, fallback] of boolDefaults) {
         const value = getWidgetValue(node, name, fallback);
@@ -68,7 +68,7 @@ function buildViewerState(node) {
         enable_viewer: !!getWidgetValue(node, "enable_viewer", true),
         use_interactive_view: !!getWidgetValue(node, "use_interactive_view", true),
         auto: !!getWidgetValue(node, "auto", false),
-        show_viewer_hud: !!getWidgetValue(node, "show_viewer_hud", true),
+        show_viewer_hud: !!getWidgetValue(node, "show_viewer_hud", false),
         interactive_state: String(getWidgetValue(node, STATE_WIDGET, "") || ""),
         mesh_r: Number(getWidgetValue(node, "mesh_r", 235) ?? 235),
         mesh_g: Number(getWidgetValue(node, "mesh_g", 235) ?? 235),
