@@ -20,36 +20,46 @@ def _project_vertices(vertices, camera_pose, fx, fy, cx, cy):
     return projected, valid
 
 
-def _shade_faces(vertices, faces, camera_position, base_color, lights):
+def _vertex_normals(vertices, faces):
     v0 = vertices[faces[:, 0]]
     v1 = vertices[faces[:, 1]]
     v2 = vertices[faces[:, 2]]
-    normals = np.cross(v1 - v0, v2 - v0)
-    normal_len = np.linalg.norm(normals, axis=1, keepdims=True)
-    normals = normals / np.maximum(normal_len, 1e-8)
+    face_normals = np.cross(v1 - v0, v2 - v0)
+    normals = np.zeros_like(vertices, dtype=np.float32)
+    np.add.at(normals, faces[:, 0], face_normals)
+    np.add.at(normals, faces[:, 1], face_normals)
+    np.add.at(normals, faces[:, 2], face_normals)
+    normals /= np.maximum(np.linalg.norm(normals, axis=1, keepdims=True), 1e-8)
+    return normals, face_normals
 
-    centers = (v0 + v1 + v2) / 3.0
+
+def _shade_vertices(vertices, faces, vertex_normals, face_normals, camera_position, base_color, lights):
+    face_vertices = vertices[faces]
+    normals = vertex_normals[faces].copy()
+    centers = face_vertices.mean(axis=1)
+
     view_dirs = camera_position.reshape(1, 3) - centers
     view_dirs = view_dirs / np.maximum(np.linalg.norm(view_dirs, axis=1, keepdims=True), 1e-8)
-    away = np.sum(normals * view_dirs, axis=1) < 0.0
-    normals[away] *= -1.0
+    facing = np.sum(face_normals * view_dirs, axis=1) >= 0.0
+    normal_matches_face = np.sum(normals.mean(axis=1) * face_normals, axis=1) >= 0.0
+    normals *= np.where(facing == normal_matches_face, 1.0, -1.0).astype(np.float32)[:, None, None]
 
-    shade = np.full(len(faces), float(lights["ambient_intensity"]), dtype=np.float32)
+    shade = np.full((len(faces), 3), float(lights["ambient_intensity"]), dtype=np.float32)
     for key in ("key", "fill", "rim"):
         position = lights.get(f"{key}_position")
         intensity = float(lights.get(f"{key}_intensity", 0.0))
         if position is None or intensity <= 0.0:
             continue
-        light_dirs = np.asarray(position, dtype=np.float32).reshape(1, 3) - centers
-        light_dirs = light_dirs / np.maximum(np.linalg.norm(light_dirs, axis=1, keepdims=True), 1e-8)
-        diffuse = np.maximum(np.sum(normals * light_dirs, axis=1), 0.0)
+        light_dirs = np.asarray(position, dtype=np.float32).reshape(1, 1, 3) - face_vertices
+        light_dirs /= np.maximum(np.linalg.norm(light_dirs, axis=2, keepdims=True), 1e-8)
+        diffuse = np.maximum(np.sum(normals * light_dirs, axis=2), 0.0)
         shade += diffuse.astype(np.float32) * intensity * 0.04
 
-    shade = np.clip(shade, 0.04, 1.35).reshape(-1, 1)
-    return np.clip(np.asarray(base_color, dtype=np.float32).reshape(1, 3) * shade, 0, 255).astype(np.uint8)
+    shade = np.clip(shade, 0.04, 1.35)
+    return np.clip(np.asarray(base_color, dtype=np.float32).reshape(1, 1, 3) * shade[:, :, None], 0, 255)
 
 
-def _rasterize_triangle(image, z_buffer, points, color):
+def _rasterize_triangle(image, z_buffer, points, colors):
     x0, y0, z0 = points[0]
     x1, y1, z1 = points[1]
     x2, y2, z2 = points[2]
@@ -76,7 +86,8 @@ def _rasterize_triangle(image, z_buffer, points, color):
     if not np.any(inside):
         return
 
-    depth = (w0 * z0) + (w1 * z1) + (w2 * z2)
+    inverse_depth = (w0 / z0) + (w1 / z1) + (w2 / z2)
+    depth = 1.0 / np.maximum(inverse_depth, 1e-8)
     region_z = z_buffer[min_y:max_y + 1, min_x:max_x + 1]
     visible = inside & (depth < region_z)
     if not np.any(visible):
@@ -84,7 +95,15 @@ def _rasterize_triangle(image, z_buffer, points, color):
 
     region_image = image[min_y:max_y + 1, min_x:max_x + 1]
     region_z[visible] = depth[visible]
-    region_image[visible] = color
+    perspective_w0 = (w0 / z0) * depth
+    perspective_w1 = (w1 / z1) * depth
+    perspective_w2 = (w2 / z2) * depth
+    color = (
+        perspective_w0[..., None] * colors[0]
+        + perspective_w1[..., None] * colors[1]
+        + perspective_w2[..., None] * colors[2]
+    )
+    region_image[visible] = np.clip(color[visible], 0, 255).astype(np.uint8)
 
 
 def render_mesh(
@@ -118,7 +137,16 @@ def render_mesh(
 
     faces = faces[valid_faces]
     camera_position = np.asarray(camera_pose, dtype=np.float32).reshape(4, 4)[:3, 3]
-    face_colors = _shade_faces(vertices, faces, camera_position, mesh_color, lighting)
+    vertex_normals, face_normals = _vertex_normals(vertices, faces)
+    face_colors = _shade_vertices(
+        vertices,
+        faces,
+        vertex_normals,
+        face_normals,
+        camera_position,
+        mesh_color,
+        lighting,
+    )
     face_depth = projected[faces, 2].mean(axis=1)
     draw_order = np.argsort(face_depth)[::-1]
 
