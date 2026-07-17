@@ -130,15 +130,88 @@ def _load_model_object(model_config):
 
 def _iter_state_dict(model_obj):
     try:
-        return model_obj.state_dict().items()
+        return list(model_obj.state_dict().items())
     except Exception:
         return []
 
 
-def _try_extract_skin_weights(model_obj, num_verts, num_joints=_NUM_JOINTS):
-    """Scan the model's tensors for a [num_verts, num_joints] skinning matrix."""
+def _get_by_path(obj, path):
+    for attr in path:
+        obj = getattr(obj, attr, None)
+        if obj is None:
+            return None
+    return obj
+
+
+# The MHR (Momentum) rig stores linear-blend-skinning as a flattened sparse
+# triplet list rather than a dense matrix, which is why a plain 2D scan misses
+# it. These are the module paths / buffer name suffixes it lives under.
+_LBS_MODULE_PATHS = [
+    ("head_pose", "mhr", "character_torch", "linear_blend_skinning"),
+    ("mhr_head", "mhr", "character_torch", "linear_blend_skinning"),
+]
+_LBS_FIELDS = ("vert_indices_flattened", "skin_indices_flattened", "skin_weights_flattened")
+
+
+def _try_reconstruct_sparse_lbs(model_obj, num_verts, num_joints=_NUM_JOINTS):
+    """Rebuild a dense [num_verts, num_joints] weight matrix from the MHR
+    flattened sparse skinning buffers (vert idx / joint idx / weight)."""
     if model_obj is None:
         return None, None
+
+    triplet = None
+    source = None
+    for path in _LBS_MODULE_PATHS:
+        module = _get_by_path(model_obj, path)
+        if module is None:
+            continue
+        parts = [_to_numpy(getattr(module, field, None)) for field in _LBS_FIELDS]
+        if all(part is not None for part in parts):
+            triplet = parts
+            source = ".".join(path)
+            break
+
+    if triplet is None:  # fall back to matching flattened buffers by name suffix
+        by_suffix = {}
+        for name, tensor in _iter_state_dict(model_obj):
+            for field in _LBS_FIELDS:
+                if name.endswith("linear_blend_skinning." + field):
+                    by_suffix[field] = _to_numpy(tensor)
+        if all(field in by_suffix for field in _LBS_FIELDS):
+            triplet = [by_suffix[field] for field in _LBS_FIELDS]
+            source = "state_dict:linear_blend_skinning"
+
+    if triplet is None:
+        return None, None
+
+    vert_idx, joint_idx, weights = (arr.reshape(-1) for arr in triplet)
+    if not (len(vert_idx) == len(joint_idx) == len(weights)) or len(vert_idx) == 0:
+        return None, None
+
+    max_joint = int(joint_idx.max())
+    n_joints = max(num_joints, max_joint + 1)
+    max_vert = int(vert_idx.max())
+    n_verts = max(num_verts, max_vert + 1)
+
+    dense = np.zeros((n_verts, n_joints), dtype=np.float32)
+    dense[vert_idx.astype(np.int64), joint_idx.astype(np.int64)] = weights.astype(np.float32)
+    dense = dense[:num_verts, :num_joints]
+    dense = np.clip(dense, 0.0, None)
+    dense = dense / np.maximum(dense.sum(axis=1, keepdims=True), 1e-8)
+    return dense, source
+
+
+def _try_extract_skin_weights(model_obj, num_verts, num_joints=_NUM_JOINTS):
+    """Get real skin weights: first the MHR sparse LBS buffers, then any dense
+    [num_verts, num_joints] matrix as a secondary heuristic."""
+    if model_obj is None:
+        return None, None
+
+    dense, source = _try_reconstruct_sparse_lbs(model_obj, num_verts, num_joints)
+    if dense is not None:
+        print(f"[SAM3DBody] Save Meshes: using real skin weights from {source}")
+        return dense, source
+
     for name, tensor in _iter_state_dict(model_obj):
         try:
             shape = tuple(int(s) for s in tensor.shape)

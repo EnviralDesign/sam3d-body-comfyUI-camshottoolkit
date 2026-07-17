@@ -499,7 +499,7 @@ class SAM3DBodyProcess:
                     "tooltip": "full: body+hand decoders, body: body decoder only, hand: hand decoder only"
                 }),
                 "person_index": ("INT", {
-                    "default": 0,
+                    "default": -1,
                     "min": -1,
                     "max": 100,
                     "step": 1,
@@ -700,7 +700,7 @@ class SAM3DBodyProcessAdvanced:
                     "tooltip": "Inference mode: full (body+hand), body only, or hand only"
                 }),
                 "person_index": ("INT", {
-                    "default": 0,
+                    "default": -1,
                     "min": -1,
                     "max": 100,
                     "step": 1,
