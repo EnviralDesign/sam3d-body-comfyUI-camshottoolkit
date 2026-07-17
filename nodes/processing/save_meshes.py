@@ -281,6 +281,31 @@ def _try_extract_joint_parents(model_obj, num_joints=_NUM_JOINTS):
     return None
 
 
+def _try_extract_joint_names(model_obj, num_joints=_NUM_JOINTS):
+    """Get the MHR skeleton's anatomical joint names (l_uparm, c_spine0, ...)
+    so exported bones are pickable in a DCC instead of joint_0..joint_126."""
+    if model_obj is None:
+        return None
+    name_paths = [
+        ("head_pose", "mhr", "character_torch", "skeleton", "joint_names"),
+        ("mhr_head", "mhr", "character_torch", "skeleton", "joint_names"),
+        ("head_pose", "mhr", "skeleton", "joint_names"),
+        ("mhr_head", "mhr", "skeleton", "joint_names"),
+    ]
+    for path in name_paths:
+        obj = _get_by_path(model_obj, path)
+        if obj is None:
+            continue
+        try:
+            names = [str(n) for n in obj]
+        except Exception:
+            continue
+        if len(names) == num_joints:
+            print(f"[SAM3DBody] Save Meshes: joint names from attr {'.'.join(path)}")
+            return names
+    return None
+
+
 def _parents_from_skeleton(skeleton):
     if not isinstance(skeleton, dict):
         return None
@@ -344,6 +369,8 @@ class SAM3DBodySaveMeshesGLB:
         if joint_parents is None and model_obj is not None:
             joint_parents = _try_extract_joint_parents(model_obj)
 
+        joint_names_all = _try_extract_joint_names(model_obj) if model_obj is not None else None
+
         real_weights = None
         if bind_skin and model_obj is not None:
             num_verts = people[0]["vertices"].shape[0]
@@ -369,6 +396,11 @@ class SAM3DBodySaveMeshesGLB:
                     # flat armature: every joint a root (no reposing hierarchy)
                     parents = np.full((num_joints,), -1, dtype=np.int64)
 
+                if joint_names_all is not None and len(joint_names_all) == num_joints:
+                    joint_names = list(joint_names_all)
+                else:
+                    joint_names = [f"joint_{i}" for i in range(num_joints)]
+
                 if bind_skin:
                     if real_weights is not None and real_weights.shape == (len(vertices), num_joints):
                         v_joints, v_weights = glb_export._top_k_from_weight_matrix(real_weights, k=4)
@@ -385,7 +417,7 @@ class SAM3DBodySaveMeshesGLB:
                     joint_parents=parents,
                     vertex_joints=v_joints,
                     vertex_weights=v_weights,
-                    joint_names=[f"joint_{i}" for i in range(num_joints)],
+                    joint_names=joint_names,
                 )
             payload.append(entry)
 
