@@ -53,6 +53,13 @@ def _extract_people(mesh_data):
         faces = _to_numpy(person.get("faces"))
         if vertices is None or faces is None:
             continue
+        focal = person.get("focal_length")
+        focal_val = None
+        if focal is not None:
+            try:
+                focal_val = float(np.asarray(focal).reshape(-1)[0])
+            except Exception:
+                focal_val = None
         people.append({
             "person_index": int(person.get("person_index", fallback_index)),
             "vertices": np.asarray(vertices, dtype=np.float32).reshape(-1, 3),
@@ -60,6 +67,7 @@ def _extract_people(mesh_data):
             "joint_coords": _numpy_or_none(person.get("joint_coords")),
             "joint_rotations": _numpy_or_none(person.get("joint_rotations")),
             "camera": _numpy_or_none(person.get("camera")),
+            "focal_length": focal_val,
         })
     return people
 
@@ -71,37 +79,10 @@ def _numpy_or_none(value):
     return np.asarray(arr, dtype=np.float32)
 
 
-def _position_people(people):
-    """Offset each person by its camera translation so groups stay in relative
-    world positions, then re-center the group around the origin. Mirrors the
-    positioning the render/export nodes already use."""
-    cameras = [p["camera"].reshape(-1)[:3] if p["camera"] is not None else None for p in people]
-
-    if len(people) == 1 or all(c is None for c in cameras):
-        for person in people:
-            person["vertices_world"] = person["vertices"]
-            person["joints_world"] = person["joint_coords"]
-        return people
-
-    world_verts = []
-    for person, camera in zip(people, cameras):
-        offset = camera.reshape(1, 3) if camera is not None else np.zeros((1, 3), np.float32)
-        person["_offset"] = offset
-        world_verts.append(person["vertices"] + offset)
-
-    combined = np.concatenate(world_verts, axis=0)
-    center = ((combined.max(axis=0) + combined.min(axis=0)) * 0.5).astype(np.float32).reshape(1, 3)
-    for person in people:
-        person["vertices_world"] = person["vertices"] + person["_offset"] - center
-        if person["joint_coords"] is not None:
-            person["joints_world"] = person["joint_coords"] + person["_offset"] - center
-        else:
-            person["joints_world"] = None
-    return people
-
-
-# 180-degree flip about X (negate Y and Z): MHR camera space -> glTF Y-up upright.
-# Same transform the STL exporter applies. det(F)=+1 so winding/handedness hold.
+# 180-degree flip about X (negate Y and Z): takes SAM3D's CV camera frame
+# (X-right, Y-down, +Z-forward, camera at origin) into the glTF convention
+# (X-right, Y-up, -Z-forward). det(F)=+1 so winding/handedness hold. Same
+# transform the STL exporter applies.
 _FLIP = np.array([1.0, -1.0, -1.0], dtype=np.float32)
 
 
@@ -113,6 +94,84 @@ def _flip_rotations(rotations):
     # R' = F R F  (F = diag(1,-1,-1), F == F^-1)
     f = np.diag(_FLIP).astype(np.float32)
     return np.einsum("ij,njk,kl->nil", f, np.asarray(rotations, dtype=np.float32), f).astype(np.float32)
+
+
+def _place_and_anchor(people):
+    """Position people and produce flipped (export-space) geometry.
+
+    When every person has a camera translation we keep the true camera-relative
+    layout (camera at the origin, people at verts + cam_t) so the framing matches
+    the capture. We then rigidly translate the WHOLE scene (people + camera) so
+    the group's bounding box is centered on the floor-plane axes (X=0, Z=0 in the
+    Y-up export frame) and the lowest foot rests on the floor (Y=0). This keeps
+    coordinates numerically sane (group sits over the origin) while preserving
+    each person's real relative height and the camera's relative framing.
+
+    Returns whether a real camera layout is available and the vec3 the camera
+    ends up at (it started at the origin, so it equals the applied translation).
+    """
+    has_camera = all(p["camera"] is not None for p in people)
+
+    for person in people:
+        verts = person["vertices"]
+        joints = person["joint_coords"]
+        if has_camera:
+            offset = person["camera"].reshape(-1)[:3].reshape(1, 3)
+            world_v = verts + offset
+            world_j = (joints + offset) if joints is not None else None
+        else:
+            world_v = verts
+            world_j = joints
+        person["fverts"] = _flip_points(world_v)
+        person["fjoints"] = _flip_points(world_j) if world_j is not None else None
+
+    combined = np.concatenate([p["fverts"] for p in people], axis=0)
+    mn = combined.min(axis=0)
+    mx = combined.max(axis=0)
+    # center the two floor-plane axes (X, Z); drop feet (min Y) to the floor.
+    translation = np.array([
+        -(mn[0] + mx[0]) * 0.5,
+        -mn[1],
+        -(mn[2] + mx[2]) * 0.5,
+    ], dtype=np.float32)
+
+    for person in people:
+        person["fverts"] = person["fverts"] + translation
+        if person["fjoints"] is not None:
+            person["fjoints"] = person["fjoints"] + translation
+
+    # Camera started at the origin, so it moves by the same translation.
+    camera_translation = translation
+    return has_camera, camera_translation
+
+
+def _build_camera(people, camera_translation, reference_image):
+    """Build a glTF perspective camera matching the SAM3D capture, or None."""
+    if reference_image is None:
+        return None
+    focal = next((p["focal_length"] for p in people if p.get("focal_length")), None)
+    if not focal:
+        return None
+    try:
+        ref = reference_image[0]
+        ref_h = int(ref.shape[0])
+        ref_w = int(ref.shape[1])
+    except Exception:
+        return None
+    if ref_h <= 0 or ref_w <= 0:
+        return None
+    import math
+    yfov = 2.0 * math.atan((ref_h * 0.5) / float(focal))
+    return {
+        "name": "capture_camera",
+        "yfov": float(yfov),
+        "aspect": float(ref_w) / float(ref_h),
+        # camera at origin, identity rotation (looks -Z, +Y up), moved with the group
+        "translation": tuple(float(x) for x in camera_translation),
+        "rotation": (0.0, 0.0, 0.0, 1.0),
+        "znear": 0.05,
+        "zfar": 1000.0,
+    }
 
 
 # --------------------------------------------------------------------------- #
@@ -342,6 +401,10 @@ class SAM3DBodySaveMeshesGLB:
                 "skeleton": ("SKELETON", {
                     "tooltip": "Optional. Provides the joint parent hierarchy for the armature."
                 }),
+                "reference_image": ("IMAGE", {
+                    "tooltip": "Optional. The image the reconstruction came from; used to emit a "
+                               "matching capture camera (FOV from focal length + aspect)."
+                }),
             },
         }
 
@@ -351,14 +414,16 @@ class SAM3DBodySaveMeshesGLB:
     OUTPUT_NODE = True
     CATEGORY = "CamShotToolkit/io"
 
-    def save(self, mesh_data, filename_prefix="sam3d/body", rigging="auto", model=None, skeleton=None):
+    def save(self, mesh_data, filename_prefix="sam3d/body", rigging="auto",
+             model=None, skeleton=None, reference_image=None):
         ensure_runtime_dependencies("Cam Shot Toolkit: Save Meshes (GLB)")
 
         people = _extract_people(mesh_data)
         if not people:
             raise RuntimeError("No mesh vertices/faces found in mesh_data")
 
-        people = _position_people(people)
+        has_camera, camera_translation = _place_and_anchor(people)
+        camera = _build_camera(people, camera_translation, reference_image) if has_camera else None
 
         want_rig = rigging in ("auto", "skeleton_only")
         bind_skin = rigging == "auto"
@@ -379,14 +444,13 @@ class SAM3DBodySaveMeshesGLB:
         payload = []
         for person in people:
             name = f"person_{person['person_index']:03d}"
-            vertices = _flip_points(person["vertices_world"])
+            vertices = person["fverts"]
             faces = person["faces"]
 
             entry = {"name": name, "vertices": vertices, "faces": faces}
 
-            joints_world = person.get("joints_world")
-            if want_rig and joints_world is not None and len(joints_world) > 0:
-                joints = _flip_points(joints_world)
+            joints = person.get("fjoints")
+            if want_rig and joints is not None and len(joints) > 0:
                 rotations = person.get("joint_rotations")
                 rotations = _flip_rotations(rotations) if rotations is not None else None
                 num_joints = len(joints)
@@ -428,10 +492,11 @@ class SAM3DBodySaveMeshesGLB:
         out_name = f"{filename}_{counter:05d}.glb"
         out_path = os.path.join(full_output_folder, out_name)
 
-        glb_export.write_glb(payload, out_path)
+        glb_export.write_glb(payload, out_path, camera=camera)
         rigged = sum(1 for e in payload if "rig" in e)
+        cam_note = "with camera" if camera is not None else "no camera"
         print(f"[SAM3DBody] Save Meshes: wrote {len(payload)} mesh(es) "
-              f"({rigged} rigged) -> {out_path}")
+              f"({rigged} rigged, {cam_note}) -> {out_path}")
 
         return {"ui": {"text": [out_path]}, "result": (out_path,)}
 

@@ -84,6 +84,7 @@ class _GLBBuilder:
         self.meshes = []
         self.nodes = []
         self.skins = []
+        self.cameras = []
         self.scene_nodes = []
 
     # -- low level -----------------------------------------------------------
@@ -196,6 +197,24 @@ class _GLBBuilder:
         })
         return len(self.skins) - 1
 
+    def add_camera(self, name, yfov, aspect=None, translation=(0.0, 0.0, 0.0),
+                   rotation=(0.0, 0.0, 0.0, 1.0), znear=0.05, zfar=1000.0):
+        """Add a perspective camera. A node with identity rotation looks down
+        local -Z with +Y up (glTF convention)."""
+        perspective = {"yfov": float(yfov), "znear": float(znear), "zfar": float(zfar)}
+        if aspect:
+            perspective["aspectRatio"] = float(aspect)
+        self.cameras.append({"type": "perspective", "perspective": perspective, "name": name})
+        cam_index = len(self.cameras) - 1
+        node_index = self._add_node({
+            "name": name,
+            "camera": cam_index,
+            "translation": [float(x) for x in translation],
+            "rotation": [float(x) for x in rotation],
+        })
+        self.scene_nodes.append(node_index)
+        return cam_index
+
     def serialize(self):
         gltf = {
             "asset": {"version": "2.0", "generator": "sam3d-camshot-toolkit"},
@@ -209,6 +228,8 @@ class _GLBBuilder:
         }
         if self.skins:
             gltf["skins"] = self.skins
+        if self.cameras:
+            gltf["cameras"] = self.cameras
 
         json_bytes = json.dumps(gltf, separators=(",", ":")).encode("utf-8")
         while len(json_bytes) % 4 != 0:  # JSON chunk padded with spaces
@@ -362,7 +383,7 @@ def build_rig(joint_positions, joint_rotations, joint_parents, vertex_joints, ve
     }
 
 
-def write_glb(people, filepath):
+def write_glb(people, filepath, camera=None):
     """
     people: list of dicts, each:
         name:     str
@@ -370,6 +391,7 @@ def write_glb(people, filepath):
         faces:    [F,3] int
         normals:  optional [N,3] float (computed if absent)
         rig:      optional rig dict from build_rig()
+    camera: optional dict {name, yfov, aspect, translation, rotation, znear, zfar}
     """
     builder = _GLBBuilder()
     for person in people:
@@ -379,6 +401,9 @@ def write_glb(people, filepath):
         if normals is None:
             normals = compute_vertex_normals(vertices, faces)
         builder.add_person(person["name"], vertices, normals, faces, rig=person.get("rig"))
+
+    if camera is not None:
+        builder.add_camera(**camera)
 
     blob = builder.serialize()
     with open(filepath, "wb") as handle:
